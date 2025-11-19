@@ -11,7 +11,8 @@ from datetime import datetime, date
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field
 
-
+from uuid import UUID
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -131,6 +132,8 @@ class Order(BaseModel):
 
     # NEW: Contest ID Field
     contest_id: Optional[str] = None
+
+    
 
     class Config:
         from_attributes = True
@@ -301,8 +304,9 @@ async def create_order(
 
     # 4. Create the 'orders' entry in our DB
     razorpay_order_id = None
-
+    # --- GENERATE HASH HERE ---
     contest_id = uuid.uuid4().hex
+    
     try:
         order_data = {
             "user_id": str(current_user.id),
