@@ -10,6 +10,9 @@ from supabase import create_client, Client
 from datetime import datetime, date
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field
+
+
+
 # Load environment variables
 load_dotenv()
 
@@ -125,6 +128,9 @@ class Order(BaseModel):
     # New fields for Razorpay
     razorpay_order_id: Optional[str] = None
     razorpay_key_id: Optional[str] = None 
+
+    # NEW: Contest ID Field
+    contest_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -295,6 +301,8 @@ async def create_order(
 
     # 4. Create the 'orders' entry in our DB
     razorpay_order_id = None
+
+    contest_id = uuid.uuid4().hex
     try:
         order_data = {
             "user_id": str(current_user.id),
@@ -302,7 +310,8 @@ async def create_order(
             "payment_method": order.payment_method,
             "delivery_address": delivery_address,
             "payment_status": "Pending",
-            "order_status": "Pending"
+            "order_status": "Pending",
+            "contest_id": contest_id # Save to DB
         }
         order_res = supabase.table("orders").insert(order_data).execute()
         if not order_res.data: raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create order record")
@@ -331,7 +340,8 @@ async def create_order(
                 "receipt": f"order_rcptid_{new_order_id}",
                 "notes": {
                     "internal_order_id": new_order_id,
-                    "user_id": str(current_user.id)
+                    "user_id": str(current_user.id),
+                    "contest_id": contest_id # Save to DB
                 }
             }
             rzp_order = razorpay_client.order.create(data=rzp_order_data)
