@@ -68,7 +68,7 @@ class ProfileBase(BaseModel):
     voluntary_consent: Optional[bool] = None
     fee_consent: Optional[bool] = None
 
-    
+
 class Profile(ProfileBase):
     id: UUID
     account_status: str
@@ -103,6 +103,8 @@ class DeliveryPartner(BaseModel):
 class OrderItemCreate(BaseModel):
     product_id: int
     quantity: int
+    # NEW: Allow frontend to send this
+    opt_out_delivery: bool = False
 
 class OrderItem(BaseModel):
     order_item_id: int
@@ -140,7 +142,8 @@ class Order(BaseModel):
     # NEW: Contest ID Field
     contest_id: Optional[str] = None
 
-    
+     # NEW: Return this in the response
+    opt_out_delivery: bool
 
     class Config:
         from_attributes = True
@@ -322,7 +325,10 @@ async def create_order(
             "delivery_address": delivery_address,
             "payment_status": "Pending",
             "order_status": "Pending",
-            "contest_id": contest_id # Save to DB
+            "contest_id": contest_id ,# Save to DB
+
+            # NEW: Save the opt-out preference
+            "opt_out_delivery": order.opt_out_delivery 
         }
         order_res = supabase.table("orders").insert(order_data).execute()
         if not order_res.data: raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create order record")
@@ -352,7 +358,9 @@ async def create_order(
                 "notes": {
                     "internal_order_id": new_order_id,
                     "user_id": str(current_user.id),
-                    "contest_id": contest_id # Save to DB
+                    "contest_id": contest_id, # Save to DB
+
+                    "opt_out_delivery": str(order.opt_out_delivery)
                 }
             }
             rzp_order = razorpay_client.order.create(data=rzp_order_data)
