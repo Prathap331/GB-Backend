@@ -423,10 +423,11 @@ async def update_order(
     """
     try:
         # 1. Check if order exists and belongs to the user
-        # We verify ownership by including .eq("user_id", ...) in the query
-        existing_order = supabase.table("orders").select("*").eq("order_id", order_id).eq("user_id", str(current_user.id)).single().execute()
+        # REMOVED .single() to prevent the crash
+        existing_res = supabase.table("orders").select("*").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
         
-        if not existing_order.data:
+        # Now we manually check if the list is empty
+        if not existing_res.data or len(existing_res.data) == 0:
              raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
 
         # 2. Update the specific field
@@ -439,11 +440,15 @@ async def update_order(
         if not res.data:
              raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Update failed")
 
-        # 3. Fetch the full updated order with items to return valid response
-        # We need to fetch again to get the 'order_items' relation for the response schema
-        final_res = supabase.table("orders").select("*, order_items(*)").eq("order_id", order_id).single().execute()
+        # 3. Fetch the full updated order
+        # REMOVED .single() here too
+        final_res = supabase.table("orders").select("*, order_items(*)").eq("order_id", order_id).execute()
         
-        return final_res.data
+        if not final_res.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found after update")
+            
+        # We take the first item from the list manually
+        return final_res.data[0]
 
     except Exception as e:
         # Catch Supabase errors
