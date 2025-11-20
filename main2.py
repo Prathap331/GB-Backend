@@ -120,6 +120,10 @@ class OrderCreate(BaseModel):
     payment_method: str # 'COD', 'Online', 'Wallet'
     opt_out_delivery: bool = False
 
+# Add this near your other schemas (like OrderCreate)
+class OrderUpdate(BaseModel):
+    opt_out_delivery: bool
+
 # UPDATED: Order Response with Razorpay fields
 class Order(BaseModel):
     order_id: int
@@ -406,6 +410,45 @@ async def get_my_single_order(order_id: int, current_user: UserResponse = Depend
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 # --- NEW: PAYMENT VERIFICATION ENDPOINT ---
+
+
+@app.put("/orders/{order_id}", response_model=Order)
+async def update_order(
+    order_id: int,
+    order_update: OrderUpdate,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Update an existing order. Currently only supports updating opt_out_delivery.
+    """
+    try:
+        # 1. Check if order exists and belongs to the user
+        # We verify ownership by including .eq("user_id", ...) in the query
+        existing_order = supabase.table("orders").select("*").eq("order_id", order_id).eq("user_id", str(current_user.id)).single().execute()
+        
+        if not existing_order.data:
+             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+
+        # 2. Update the specific field
+        update_data = {
+            "opt_out_delivery": order_update.opt_out_delivery
+        }
+        
+        res = supabase.table("orders").update(update_data).eq("order_id", order_id).execute()
+        
+        if not res.data:
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Update failed")
+
+        # 3. Fetch the full updated order with items to return valid response
+        # We need to fetch again to get the 'order_items' relation for the response schema
+        final_res = supabase.table("orders").select("*, order_items(*)").eq("order_id", order_id).single().execute()
+        
+        return final_res.data
+
+    except Exception as e:
+        # Catch Supabase errors
+        if isinstance(e, HTTPException): raise e
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 @app.post("/payment/verify")
 async def verify_payment(
