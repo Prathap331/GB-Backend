@@ -62,6 +62,13 @@ class ProfileBase(BaseModel):
     postal_code: Optional[str] = None
     country: Optional[str] = None
 
+
+    # --- NEW CONTEST PREFERENCE FIELDS ---
+    city_preference: Optional[str] = None
+    voluntary_consent: Optional[bool] = None
+    fee_consent: Optional[bool] = None
+
+    
 class Profile(ProfileBase):
     id: UUID
     account_status: str
