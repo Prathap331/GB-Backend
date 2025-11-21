@@ -10,7 +10,7 @@ from supabase import create_client, Client
 from datetime import datetime, date
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field
-
+from datetime import datetime, date, timezone
 from uuid import UUID
 import uuid
 
@@ -211,44 +211,59 @@ async def signup(user: UserCreate):
 '''
 
 # --- Auth Endpoints ---
-
 @app.post("/auth/signup", response_model=UserResponse)
 async def signup(user: UserCreate):
     try:
+        # Attempt to sign up
         res = supabase.auth.sign_up({
-            "email": user.email, 
-            "password": user.password, 
+            "email": user.email,
+            "password": user.password,
             "options": {
                 "data": {
-                    "full_name": user.full_name, 
+                    "full_name": user.full_name,
                     "phone": user.phone_number
                 }
             }
         })
-        if res.user: 
+        
+        if res.user:
+            # --- LOGIC CHECK: Is this actually a new user? ---
+            
+            # 1. Get the 'created_at' time from the user record
+            # (Supabase returns ISO format like "2023-11-21T06:14:33.340884Z")
+            user_created_at = datetime.fromisoformat(res.user.created_at.replace("Z", "+00:00"))
+            
+            # 2. Get the current time (in UTC to match Supabase)
+            now = datetime.now(timezone.utc)
+            
+            # 3. Calculate the difference in seconds
+            seconds_since_creation = (now - user_created_at).total_seconds()
+            
+            # 4. If the user was created more than 30 seconds ago, 
+            # they definitely already existed!
+            if seconds_since_creation > 30:
+                 raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, 
+                    detail="Account already exists. Please login instead."
+                )
+
+            # If we get here, it's a brand new user (created < 30s ago)
             return UserResponse(
-                id=res.user.id, 
-                email=res.user.email, 
+                id=res.user.id,
+                email=res.user.email,
                 created_at=res.user.created_at
             )
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create user")
-    
-    except Exception as e:
-        # Convert error to string to check the message content
-        error_msg = str(e)
-        
-        # Check for specific Supabase duplicate error text
-        if "User already registered" in error_msg or "already exists" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, 
-                detail="Account already exists. Please login instead."
-            )
             
-        # Fallback for other errors
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
-    
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create user")
 
-    
+    except Exception as e:
+        # If we manually raised the 409 above, allow it to pass through
+        if isinstance(e, HTTPException):
+            raise e
+            
+        # Catch other unexpected errors
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
 @app.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     try:
