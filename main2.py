@@ -199,7 +199,7 @@ def read_root():
     return {"message": "Welcome to the E-Commerce API v3 (Razorpay)"}
 
 # --- Auth Endpoints ---
-
+'''
 @app.post("/auth/signup", response_model=UserResponse)
 async def signup(user: UserCreate):
     try:
@@ -208,7 +208,47 @@ async def signup(user: UserCreate):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create user")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+'''
 
+# --- Auth Endpoints ---
+
+@app.post("/auth/signup", response_model=UserResponse)
+async def signup(user: UserCreate):
+    try:
+        res = supabase.auth.sign_up({
+            "email": user.email, 
+            "password": user.password, 
+            "options": {
+                "data": {
+                    "full_name": user.full_name, 
+                    "phone": user.phone_number
+                }
+            }
+        })
+        if res.user: 
+            return UserResponse(
+                id=res.user.id, 
+                email=res.user.email, 
+                created_at=res.user.created_at
+            )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create user")
+    
+    except Exception as e:
+        # Convert error to string to check the message content
+        error_msg = str(e)
+        
+        # Check for specific Supabase duplicate error text
+        if "User already registered" in error_msg or "already exists" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, 
+                detail="Account already exists. Please login instead."
+            )
+            
+        # Fallback for other errors
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=error_msg)
+    
+
+    
 @app.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     try:
