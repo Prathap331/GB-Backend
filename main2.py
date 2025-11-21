@@ -210,11 +210,9 @@ async def signup(user: UserCreate):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 '''
 
-# --- Auth Endpoints ---
 @app.post("/auth/signup", response_model=UserResponse)
 async def signup(user: UserCreate):
     try:
-        # Attempt to sign up
         res = supabase.auth.sign_up({
             "email": user.email,
             "password": user.password,
@@ -227,26 +225,34 @@ async def signup(user: UserCreate):
         })
         
         if res.user:
-            # --- LOGIC CHECK: Is this actually a new user? ---
+            # --- THE "SHERLOCK HOLMES" CHECK ---
             
-            user_created_at = res.user.created_at
+            # 1. Check if this user ID actually made it into our 'profiles' table.
+            # If the email was a duplicate, Supabase sends a FAKE user with a random ID 
+            # that will NOT exist in our database.
+            profile_check = supabase.table("profiles").select("id").eq("id", res.user.id).execute()
+            
+            # If the list is empty, it was a fake success (Duplicate Email)
+            if not profile_check.data:
+                 raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, 
+                    detail="Account already exists. Please login instead."
+                )
 
-            # FIX: Check if it's already a datetime object (Supabase client usually does this)
+            # 2. (Backup Check) If it IS a real user object but from the past 
+            # (in case settings change later), check the timestamp.
+            user_created_at = res.user.created_at
+            
+            # Handle both string and datetime formats safely
             if isinstance(user_created_at, str):
-                # If it IS a string, parse it manually
                 user_created_at = datetime.fromisoformat(user_created_at.replace("Z", "+00:00"))
             
-            # 2. Get the current time (in UTC)
-            now = datetime.now(timezone.utc)
-            
-            # 3. Calculate difference. Ensure both are timezone-aware.
+            # Ensure timezone awareness
             if user_created_at.tzinfo is None:
                 user_created_at = user_created_at.replace(tzinfo=timezone.utc)
                 
-            seconds_since_creation = (now - user_created_at).total_seconds()
-            
-            # 4. If user is older than 30 seconds, they are an existing user
-            if seconds_since_creation > 30:
+            now = datetime.now(timezone.utc)
+            if (now - user_created_at).total_seconds() > 30:
                  raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT, 
                     detail="Account already exists. Please login instead."
@@ -261,12 +267,33 @@ async def signup(user: UserCreate):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create user")
 
     except Exception as e:
-        # Allow manual HTTPExceptions (like our 409) to pass through
-        if isinstance(e, HTTPException):
-            raise e
+        if isinstance(e, HTTPException): raise e
+        
+        error_msg = str(e)
+        if "User already registered" in error_msg or "already exists" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT, 
+                detail="Account already exists. Please login instead."
+            )
             
-        # Catch other unexpected errors
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @app.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     try:
