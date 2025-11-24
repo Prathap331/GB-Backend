@@ -177,6 +177,14 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
+
+# NEW: Forgot Password Schemas
+class UserForgotPassword(BaseModel):
+    email: EmailStr
+
+class UserResetPassword(BaseModel):
+    new_password: str
+
 class UserResponse(BaseModel):
     id: UUID
     email: EmailStr
@@ -609,6 +617,68 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 @app.get("/auth/me", response_model=UserResponse)
 async def get_me(current_user: UserResponse = Depends(get_current_user)):
     return current_user
+
+
+
+
+
+# --- NEW: Forgot Password Endpoints ---
+
+@app.post("/auth/forgot-password")
+async def forgot_password(data: UserForgotPassword):
+    """
+    Trigger a password reset email via Supabase.
+    The email will contain a link redirecting to your frontend.
+    IMPORTANT: Configure the Redirect URL in Supabase Dashboard -> Authentication -> URL Configuration.
+    """
+    try:
+        # Replace 'YOUR_FRONTEND_RESET_URL' with the actual URL your frontend uses
+        # Example: https://goldenbanana.vercel.app/reset-password
+        # For now, we use a placeholder or assume Supabase default if omitted.
+        # Ideally, pass options={"redirect_to": "https://your-frontend.com/reset-password"}
+        supabase.auth.reset_password_email(data.email)
+        return {"message": "Password reset email sent if account exists"}
+    except Exception as e:
+        # We typically don't want to reveal if the email failed (security), 
+        # but for debugging we return the error string.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+@app.post("/auth/reset-password")
+async def reset_password(
+    data: UserResetPassword, 
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Update the password for the logged-in user.
+    This endpoint requires the Bearer Token obtained from the password reset email link.
+    """
+    try:
+        attributes = {"password": data.new_password}
+        supabase.auth.update_user(attributes)
+        return {"message": "Password updated successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # --- Profile Endpoints ---
 
