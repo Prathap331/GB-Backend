@@ -635,7 +635,7 @@ async def forgot_password(data: UserForgotPassword):
         # Change this URL to your actual frontend reset page.
         # Example for local testing: "http://localhost:3000/reset-password"
         # Example for production: "https://goldenbanana.vercel.app/reset-password"
-        redirect_url = "https://www.goldenbanana.online/cancellation-refund-policy" 
+        redirect_url = "http://localhost:8080/reset-password" 
         
         supabase.auth.reset_password_email(data.email, options={"redirect_to": redirect_url})
         
