@@ -637,7 +637,7 @@ async def forgot_password(data: UserForgotPassword):
         # Example for production: "https://goldenbanana.vercel.app/reset-password"
         redirect_url = "https://www.goldenbanana.online/reset-password" 
         
-        supabase.auth.reset_password_email(data.email, options={"redirect_to": redirect_url})
+        supabase.auth.reset_password_email(data.email, options={"redirectTo": redirect_url})
         
         return {"message": "Password reset email sent if account exists"}
         
