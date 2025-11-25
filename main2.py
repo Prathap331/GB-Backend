@@ -97,6 +97,12 @@ class Product(BaseModel):
     updated_at: datetime
 
 
+
+    # Product Variants
+    size: Optional[str] = None
+    color: Optional[str] = None # NEW: Color Field
+
+
     # NEW: Size Field
     size: Optional[str] = None
     class Config: from_attributes = True
@@ -106,6 +112,8 @@ class Product(BaseModel):
 # NEW: Schema for updating product details
 class ProductUpdate(BaseModel):
     size: Optional[str] = None
+
+    color: Optional[str] = None # NEW: Updatable Color
     # You can add other fields here later if you want to update price/stock etc.
 
 # Delivery Partner Schemas
@@ -121,6 +129,9 @@ class OrderItemCreate(BaseModel):
     product_id: int
     quantity: int
     # NEW: Allow frontend to send this
+
+    size: Optional[str] = None 
+    color: Optional[str] = None # NEW: User selects color
     opt_out_delivery: bool = False
 
 class OrderItem(BaseModel):
@@ -130,6 +141,9 @@ class OrderItem(BaseModel):
     quantity: int
     price_per_unit: float
     subtotal: float
+
+    size: Optional[str] = None 
+    color: Optional[str] = None # NEW: Saved color
     class Config: from_attributes = True
 
 class OrderCreate(BaseModel):
@@ -782,38 +796,25 @@ async def get_product(product_id: int):
 
 
 
-
-# --- NEW: Update Product Size Endpoint ---
+# --- Update Product (Size & Color) Endpoint ---
 @app.put("/products/{product_id}", response_model=Product)
 async def update_product(
     product_id: int, 
     product_update: ProductUpdate,
     current_user: UserResponse = Depends(get_current_user)
 ):
-    """
-    Update product details (e.g., Size).
-    Authenticated endpoint.
-    """
     try:
-        # Only allow 'size' to be updated for now based on schema
         update_data = product_update.model_dump(exclude_unset=True)
         if not update_data:
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
 
         update_data["updated_at"] = datetime.now().isoformat()
-
-        # Execute Update
         res = supabase.table("products").update(update_data).eq("product_id", product_id).execute()
-        
         if not res.data or len(res.data) == 0:
              raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found or update failed")
-
         return res.data[0]
-
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
 
 
 
@@ -869,7 +870,12 @@ async def create_order(
             price_per_unit = float(product["price"])
             subtotal = price_per_unit * item.quantity
             total_amount += subtotal
-            order_items_to_create.append({"product_id": item.product_id, "quantity": item.quantity, "price_per_unit": price_per_unit, "subtotal": subtotal})
+            order_items_to_create.append({"product_id": item.product_id, "quantity": item.quantity, "price_per_unit": price_per_unit, "subtotal": subtotal,
+                                          "size": item.size,
+                "color": item.color # User selected color
+                                          
+                                          
+                                          })
     except Exception as e:
         if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error validating products: {e}")
