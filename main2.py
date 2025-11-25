@@ -640,8 +640,10 @@ async def forgot_password(data: UserForgotPassword):
         #supabase.auth.reset_password_email(data.email, options={"redirectTo": redirect_url})
     
 
-
-        supabase.auth.reset_password_email(email=data.email,redirect_to="https://www.goldenbanana.online/reset-password")
+        supabase.auth.reset_password_email(
+    data.email,
+    "https://www.goldenbanana.online/reset-password"
+)
         return {"message": "Password reset email sent if account exists"}
         
     except Exception as e:
