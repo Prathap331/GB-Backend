@@ -215,9 +215,14 @@ class UserResponse(BaseModel):
     email: EmailStr
     created_at: datetime
 
+
+
+
+# UPDATED: Added refresh_token field
 class Token(BaseModel):
     access_token: str
     token_type: str
+    refresh_token: str 
 
 
 
@@ -631,13 +636,28 @@ async def signup(user: UserCreate):
 
 
 
+# UPDATED: Login endpoint now returns refresh_token
 @app.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     try:
-        res = supabase.auth.sign_in_with_password({"email": form_data.username, "password": form_data.password})
-        return Token(access_token=res.session.access_token, token_type="bearer")
+        res = supabase.auth.sign_in_with_password({
+            "email": form_data.username, 
+            "password": form_data.password
+        })
+        return Token(
+            access_token=res.session.access_token,
+            refresh_token=res.session.refresh_token, # Extracting refresh token
+            token_type="bearer"
+        )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect email or password")
+
+
+
+
+
+
+
 
 @app.get("/auth/me", response_model=UserResponse)
 async def get_me(current_user: UserResponse = Depends(get_current_user)):
