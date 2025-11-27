@@ -99,22 +99,26 @@ class Product(BaseModel):
 
 
     # Product Variants
-    size: Optional[str] = None
-    color: Optional[str] = None # NEW: Color Field
+    #size: Optional[str] = None
+    #color: Optional[str] = None # NEW: Color Field
+
+    # CHANGED: These are now Lists of Strings
+    sizes: Optional[List[str]] = []
+    colors: Optional[List[str]] = []
+    images: Optional[List[str]] = []
 
 
     # NEW: Size Field
-    size: Optional[str] = None
+    #size: Optional[str] = None
     class Config: from_attributes = True
 
 
 
-# NEW: Schema for updating product details
+# UPDATED: Product Update Schema
 class ProductUpdate(BaseModel):
-    size: Optional[str] = None
-
-    color: Optional[str] = None # NEW: Updatable Color
-    # You can add other fields here later if you want to update price/stock etc.
+    sizes: Optional[List[str]] = None
+    colors: Optional[List[str]] = None
+    images: Optional[List[str]] = None
 
 
 
@@ -829,7 +833,7 @@ async def get_product(product_id: int):
 
 
 
-
+'''
 # --- Update Product (Size & Color) Endpoint ---
 @app.put("/products/{product_id}", response_model=Product)
 async def update_product(
@@ -849,6 +853,44 @@ async def update_product(
         return res.data[0]
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+'''
+
+
+
+
+
+
+
+
+
+
+# --- Updated Product Update (Handles Arrays) ---
+@app.put("/products/{product_id}", response_model=Product)
+async def update_product(
+    product_id: int, 
+    product_update: ProductUpdate,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    try:
+        update_data = product_update.model_dump(exclude_unset=True)
+        if not update_data:
+             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
+
+        update_data["updated_at"] = datetime.now().isoformat()
+        res = supabase.table("products").update(update_data).eq("product_id", product_id).execute()
+        if not res.data or len(res.data) == 0:
+             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found or update failed")
+        return res.data[0]
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+
+
+
+
+
 
 
 
