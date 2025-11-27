@@ -1005,7 +1005,7 @@ async def create_order(
         final_order.razorpay_key_id = RAZORPAY_KEY_ID 
 
     return final_order
-
+'''
 @app.get("/orders/me", response_model=List[Order])
 async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
     try:
@@ -1015,6 +1015,19 @@ async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
         
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    '''
+
+
+
+@app.get("/orders/me", response_model=List[Order])
+async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
+    try:
+        # The query string here is critical. We ask for products explicitly.
+        res = supabase.table("orders").select("*, order_items(*, products(product_name, image_url))").eq("user_id", str(current_user.id)).order("created_at", desc=True).execute()
+        return res.data
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
 
 @app.get("/orders/me/{order_id}", response_model=Order)
 async def get_my_single_order(order_id: int, current_user: UserResponse = Depends(get_current_user)):
