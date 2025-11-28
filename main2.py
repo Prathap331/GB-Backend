@@ -106,7 +106,10 @@ class Product(BaseModel):
     # CHANGED: These are now Lists of Strings
     sizes: Optional[List[str]] = []
     colors: Optional[List[str]] = []
-    images: Optional[List[str]] = []
+    
+
+    # FIX IS HERE: Changed from List[str] to Dict
+    images: Optional[Dict[str, List[str]]] = {} 
 
 
     # NEW: Size Field
@@ -119,18 +122,25 @@ class Product(BaseModel):
 class ProductUpdate(BaseModel):
     sizes: Optional[List[str]] = None
     colors: Optional[List[str]] = None
-    images: Optional[List[str]] = None
+    #images: Optional[List[str]] = None
+
+    # UPDATED: Allow updating the complex image structure
+    images: Optional[Dict[str, List[str]]] = None
+
+    
 
 
 
 
-# NEW: Simple Product schema for nested response
+
+
+
+# --- NEW: Simple Product schema for nested response ---
+# Must be defined BEFORE OrderItem
 class ProductSimple(BaseModel):
     product_name: str
     image_url: Optional[str] = None
     class Config: from_attributes = True
-
-
 
 # Delivery Partner Schemas
 class DeliveryPartner(BaseModel):
@@ -161,6 +171,8 @@ class OrderItem(BaseModel):
     size: Optional[str] = None 
     color: Optional[str] = None # NEW: Saved color
 
+
+     
     # UPDATED: Nested product info
     products: Optional[ProductSimple] = None 
     class Config: from_attributes = True
