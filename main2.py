@@ -1178,7 +1178,7 @@ async def verify_payment(
     
 
 
-
+'''
 
 # --- NEW ENDPOINT: Download Invoice ---
 @app.get("/orders/{order_id}/invoice")
@@ -1210,4 +1210,51 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
         return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
     except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+'''
+
+# --- UPDATED ENDPOINT: Download Invoice (With Payment Check) ---
+@app.get("/orders/{order_id}/invoice")
+async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(get_current_user)):
+    """
+    Generate and download a PDF invoice for a specific order.
+    Only allows download if payment_status is 'Completed'.
+    """
+    try:
+        # 1. Fetch Order details
+        order_res = supabase.table("orders").select("*, order_items(*, products(product_name))").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
+        
+        if not order_res.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        
+        order_data = order_res.data[0]
+
+        # --- NEW SECURITY CHECK ---
+        # Prevent generating invoice for unpaid/pending orders
+        if order_data.get("payment_status") != "Completed":
+             raise HTTPException(
+                 status_code=status.HTTP_400_BAD_REQUEST, 
+                 detail="Invoice cannot be generated. Payment is not completed."
+             )
+        # --------------------------
+
+        items_data = order_data.get('order_items', [])
+
+        # 2. Fetch User Profile (for Address)
+        user_res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).execute()
+        user_data = user_res.data[0] if user_res.data else {}
+
+        # 3. Generate PDF
+        pdf_bytes = generate_pdf_invoice(order_data, user_data, items_data)
+
+        # 4. Return as downloadable file
+        headers = {
+            'Content-Disposition': f'attachment; filename="invoice_{order_id}.pdf"'
+        }
+        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+
+    except Exception as e:
+        # If we manually raised the 400 above, allow it to pass through
+        if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
