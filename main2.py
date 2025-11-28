@@ -20,6 +20,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
 import io
 import random
+from typing import List, Optional, Dict
 # Load environment variables
 load_dotenv()
 
