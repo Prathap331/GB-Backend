@@ -105,11 +105,11 @@ class Product(BaseModel):
 
     # CHANGED: These are now Lists of Strings
     sizes: Optional[List[str]] = []
-    colors: Optional[List[str]] = []
+    color: Optional[str] = None
     
 
     # FIX IS HERE: Changed from List[str] to Dict
-    images: Optional[Dict[str, List[str]]] = {} 
+    images: Optional[List[str]] = None
 
 
     # NEW: Size Field
