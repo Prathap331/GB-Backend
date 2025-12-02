@@ -798,8 +798,15 @@ async def reset_password(
 @app.get("/profiles/me", response_model=Profile)
 async def get_my_profile(current_user: UserResponse = Depends(get_current_user)):
     try:
-        res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).maybe_single().execute()
-            if not res.data:
+        res = (
+            supabase.table("profiles")
+            .select("*")
+            .eq("id", str(current_user.id))
+            .maybe_single()
+            .execute()
+        )
+
+        if not res.data:
             return {
                 "id": current_user.id,
                 "full_name": None,
@@ -811,11 +818,16 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
                 "postal_code": None,
                 "country": None,
                 "account_status": "active",
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.utcnow(),
             }
+
         return res.data
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
+
 
 @app.put("/profiles/me", response_model=Profile)
 async def update_my_profile(profile: ProfileBase, current_user: UserResponse = Depends(get_current_user)):
@@ -1115,44 +1127,65 @@ async def get_my_single_order(order_id: int, current_user: UserResponse = Depend
 async def update_order(
     order_id: int,
     order_update: OrderUpdate,
-    current_user: UserResponse = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user),
 ):
     """
-    Update an existing order. Currently only supports updating opt_out_delivery.
+    Update opt_out_delivery.
     """
     try:
-        # 1. Check if order exists and belongs to the user
-        # REMOVED .single() to prevent the crash
-        existing_res = supabase.table("orders").select("*").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
-        
-        # Now we manually check if the list is empty
-        if not existing_res.data or len(existing_res.data) == 0:
-             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        # check order
+        existing_res = (
+            supabase.table("orders")
+            .select("*")
+            .eq("order_id", order_id)
+            .eq("user_id", str(current_user.id))
+            .execute()
+        )
 
-        # 2. Update the specific field
-        update_data = {
-            "opt_out_delivery": order_update.opt_out_delivery
-        }
-        
-        res = supabase.table("orders").update(update_data).eq("order_id", order_id).execute()
-        
+        if not existing_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Order not found"
+            )
+
+        # update
+        update_data = {"opt_out_delivery": order_update.opt_out_delivery}
+
+        res = (
+            supabase.table("orders")
+            .update(update_data)
+            .eq("order_id", order_id)
+            .execute()
+        )
+
         if not res.data:
-             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Update failed")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Update failed",
+            )
 
-        # 3. Fetch the full updated order
-        # REMOVED .single() here too
-        final_res = supabase.table("orders").select("*, order_items(*)").eq("order_id", order_id).execute()
-        
+        # fetch updated
+        final_res = (
+            supabase.table("orders")
+            .select("*, order_items(*, products(product_name, image_url))")
+            .eq("order_id", order_id)
+            .execute()
+        )
+
         if not final_res.data:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found after update")
-            
-        # We take the first item from the list manually
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Order not found after update",
+            )
+
         return final_res.data[0]
 
     except Exception as e:
-        # Catch Supabase errors
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+        )
+
 
 @app.post("/payment/verify")
 async def verify_payment(
