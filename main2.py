@@ -848,18 +848,42 @@ async def update_my_profile(profile: ProfileBase, current_user: UserResponse = D
 async def get_products():
     try:
         res = supabase.table("products").select("*").order("created_at", desc=True).execute()
-        return res.data
+        products = res.data
+
+        # Convert images from string to list safely
+        for p in products:
+            if isinstance(p.get("images"), str):
+                try:
+                    p["images"] = json.loads(p["images"])
+                except:
+                    p["images"] = []  # fallback
+
+        return products
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/products/{product_id}", response_model=Product)
 async def get_product(product_id: int):
     try:
-        res = supabase.table("products").select("*").eq("product_id", product_id).eq("is_active", True).single().execute()
-        if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found or not active")
-        return res.data
+        res = supabase.table("products").select("*").eq("product_id", product_id).single().execute()
+        product = res.data
+        if not product:
+            raise HTTPException(404, "Product not found")
+
+        # Convert images string → list
+        if isinstance(product.get("images"), str):
+            try:
+                product["images"] = json.loads(product["images"])
+            except:
+                product["images"] = []
+
+        return product
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(500, detail=str(e))
+
 
 @app.get("/products/base/{base_product_id}", response_model=List[Product])
 async def get_products_by_base_id(base_product_id: int):
