@@ -438,10 +438,10 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.drawRightString(width - 50, height - 50, "TAX INVOICE")
 
     c.setFont("Helvetica", 10)
-    c.drawString(50, height - 70, "123 Fruit Market, Banana Street")
-    c.drawString(50, height - 85, "Hyderabad, Telangana, 500081")
-    c.drawString(50, height - 100, "GSTIN: 36ABCDE1234F1Z5")
-    c.drawString(50, height - 115, "Contact: support@goldenbanana.com")
+    c.drawString(50, height - 70, "Flat no. 502, Meenakshi enclave MIG 891 KPHB phase 3")
+    c.drawString(50, height - 85, "Kukatpally, Hyderabad, 500072")
+    c.drawString(50, height - 100, "GSTIN: 36AAQCM4860P1ZK")
+    c.drawString(50, height - 115, "Contact: support@goldenbanana.online")
 
     c.line(50, height - 130, width - 50, height - 130)
 
@@ -506,10 +506,10 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.line(50, y, width - 50, y)
 
     # --- Totals ---
-    grand_total = float(order_data['total_amount'])
+    base_amount = float(order_data['total_amount'])   # base price
     tax_rate = 0.05
-    base_amount = grand_total / (1 + tax_rate)
-    tax_amount = grand_total - base_amount
+    tax_amount = base_amount * tax_rate
+    grand_total = base_amount + tax_amount
 
     y -= 10
     c.setFont("Helvetica", 10)
@@ -546,11 +546,9 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     
     c.setFont("Helvetica", 9)
     y -= 15
-    c.drawString(50, y, "1. Goods once sold will not be taken back.")
+    c.drawString(50, y, "1. Your contest lucky number becomes invalid if you return the product.")
     y -= 12
-    c.drawString(50, y, "2. Interest @ 18% p.a. will be charged if bill is not paid on due date.")
-    y -= 12
-    c.drawString(50, y, "3. All disputes are subject to Hyderabad jurisdiction only.")
+    c.drawString(50, y, "2. All disputes are subject to Hyderabad jurisdiction only.")
 
     c.setFont("Helvetica-Oblique", 8)
     c.drawCentredString(width / 2, 50, "Thank you for shopping with Golden Banana!")
