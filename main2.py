@@ -1049,7 +1049,7 @@ async def create_order(
     try:
         order_data = {
             "user_id": str(current_user.id),
-            "total_amount": total_amount * 0.05,
+            "total_amount": total_amount + (total_amount* 0.05),
             "payment_method": order.payment_method,
             "delivery_address": delivery_address,
             "payment_status": "Pending",
@@ -1081,7 +1081,7 @@ async def create_order(
         try:
             # Amount is in paisa (100 paisa = 1 Rupee)
             rzp_order_data = {
-                "amount": float(total_amount * 100 * 0.05), 
+                "amount": float((total_amount + (total_amount * 0.05)) * 100), 
                 "currency": "INR",
                 "receipt": f"order_rcptid_{new_order_id}",
                 "notes": {
