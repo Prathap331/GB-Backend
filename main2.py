@@ -113,8 +113,14 @@ class Product(BaseModel):
     images: Optional[List[str]] = None
 
 
-    # NEW: Size Field
-    #size: Optional[str] = None
+       # --- NEW CLOTHING DETAIL FIELDS ---
+    Design: Optional[str] = None
+    Fit: Optional[str] = None
+    Neck: Optional[str] = None
+    Sleeve_type: Optional[str] = None
+    Wash_care: Optional[str] = None
+    Product_description: Optional[str] = None
+
     class Config: from_attributes = True
 
 
@@ -128,7 +134,13 @@ class ProductUpdate(BaseModel):
     # UPDATED: Allow updating the complex image structure
     images: Optional[List[str]] = None
 
-    
+     # NEW
+    Design: Optional[str] = None
+    Fit: Optional[str] = None
+    Neck: Optional[str] = None
+    Sleeve_type: Optional[str] = None
+    Wash_care: Optional[str] = None
+    Product_description: Optional[str] = None
 
 
 
