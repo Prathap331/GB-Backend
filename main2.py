@@ -21,6 +21,7 @@ from reportlab.lib import colors
 import io
 import random
 from typing import List, Optional, Dict
+import time
 # Load environment variables
 load_dotenv()
 
@@ -43,6 +44,7 @@ if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
 # Initialize Razorpay client
 razorpay_client = razorpay.Client(
     auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+    timeout=10
 )
 
 app = FastAPI(title="E-Commerce Backend v3 (Razorpay)")
