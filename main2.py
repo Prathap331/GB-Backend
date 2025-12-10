@@ -1,28 +1,30 @@
 import os
+import io
+import json
+import uuid
+import time
+import random
+
+from datetime import datetime, date, timezone
+from typing import List, Optional, Dict
+
 import razorpay
 from dotenv import load_dotenv
-from fastapi import FastAPI, Depends, HTTPException, status
+from supabase import create_client, Client
+
+from fastapi import FastAPI, Depends, HTTPException, status, Response
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
-from typing import List, Optional
-from supabase import create_client, Client
-from datetime import datetime, date
-from uuid import UUID
+
 from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime, date, timezone
 from uuid import UUID
-import uuid
-from fastapi import FastAPI, Depends, HTTPException, status, Response
+
+# PDF Generator
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 from reportlab.lib import colors
-import io
-import random
-from typing import List, Optional, Dict
-import time
-import json
+
 # Load environment variables
 load_dotenv()
 
@@ -108,7 +110,7 @@ class Product(BaseModel):
     #color: Optional[str] = None # NEW: Color Field
 
     # CHANGED: These are now Lists of Strings
-    sizes: Optional[List[str]] = []
+    sizes: Optional[List[str]] = Field(default_factory=list)
     color: Optional[str] = None
     
 
@@ -675,6 +677,9 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
                 "state": None,
                 "postal_code": None,
                 "country": None,
+                "city_preference": "",
+                "voluntary_consent": False,
+                "fee_consent": False,
                 "account_status": "active",
                 "updated_at": datetime.utcnow().isoformat(),
             }
@@ -882,7 +887,7 @@ async def create_order(
     
     # 1. Get user's profile to fetch address
     try:
-        profile_res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).maybe_single().execute()
+        profile_res = (supabase.table("profiles").select("*").eq("id", str(current_user.id)).maybe_single().execute())
         profile = profile_res.data
 
         if not profile: 
@@ -891,16 +896,41 @@ async def create_order(
                 "full_name": None,
                 "phone_number": None,
                 "address_line1": None,
+                "address_line2": None,
                 "city": None,
+                "state": None,
                 "postal_code": None,
+                "country": None,
+                "city_preference": "",
+                "voluntary_consent": False,
+                "fee_consent": False,
                 "account_status": "active",
-                "updated_at": datetime.utcnow().isoformat()
+                "updated_at": datetime.utcnow().isoformat(),
             }
             supabase.table("profiles").insert(profile).execute()
 
-        if not all([profile.get("full_name"), profile.get("address_line1"), profile.get("city"), profile.get("postal_code")]):
-             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Please complete your profile (full_name, address_line1, city, postal_code) before ordering.")
-        delivery_address = f"{profile['full_name']}\n{profile['address_line1']}\n{profile.get('address_line2', '')}\n{profile['city']}, {profile['state']} {profile['postal_code']}\n{profile['country']}"
+        required_fields = [
+            profile.get("full_name"),
+            profile.get("address_line1"),
+            profile.get("city"),
+            profile.get("postal_code")
+        ]
+
+        if any(f in (None, "", " ") for f in required_fields):
+            raise HTTPException(
+                status_code=400,
+                detail="Please complete your profile (name, address, city, postal code) before ordering."
+            )
+
+# SAFE ADDRESS FORMAT
+        delivery_address = (
+            f"{profile.get('full_name','')}\n"
+            f"{profile.get('address_line1','')}\n"
+            f"{profile.get('address_line2','')}\n"
+            f"{profile.get('city','')}, {profile.get('state','')} {profile.get('postal_code','')}\n"
+            f"{profile.get('country','')}"
+        )    
+
     except Exception as e:
         if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error fetching profile: {e}")
@@ -985,7 +1015,7 @@ async def create_order(
         try:
             # Amount is in paisa (100 paisa = 1 Rupee)
             rzp_order_data = {
-                "amount": float((total_amount + (total_amount * 0.05)) * 100), 
+                "amount": float(float(order_data["total_amount"] * 100)), 
                 "currency": "INR",
                 "receipt": f"order_rcptid_{new_order_id}",
                 "notes": {
@@ -1233,7 +1263,7 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
     """
     try:
         # 1. Fetch Order details
-        order_res = supabase.table("orders").select("*, order_items(*, products(product_name))").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
+        order_res = supabase.table("orders").select("*, order_items(*, products:product_id(product_name,price))").eq("order_id", order_id).eq("user_id", str(current_user.id)).single().execute()
         
         if not order_res.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -1252,7 +1282,7 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
         items_data = order_data.get('order_items', [])
 
         # 2. Fetch User Profile (for Address)
-        user_res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).execute()
+        user_res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).maybe_single().execute()
         user_data = user_res.data[0] if user_res.data else {}
 
         # 3. Generate PDF
