@@ -43,7 +43,7 @@ if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
 
 # Initialize Razorpay client
 razorpay_client = razorpay.Client(
-    auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET)
+    auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET),
     timeout=10
 )
 
@@ -225,7 +225,7 @@ class Order(BaseModel):
     contest_id: Optional[str] = None
 
 
-    lucky_number: Optional[str] = None # NEW: Lucky Number field
+    lucky_number: Optional[List[str]] = None # NEW: Lucky Number field
      # NEW: Return this in the response
     opt_out_delivery: bool
 
@@ -520,10 +520,12 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.line(50, y, width - 50, y)
 
     # --- Totals ---
-    base_amount = float(order_data['total_amount'])   # base price
+    grand_total = float(order_data['total_amount'])
     tax_rate = 0.05
-    tax_amount = base_amount * tax_rate
-    grand_total = base_amount + tax_amount
+# Base amount (without GST)
+    base_amount = grand_total / (1 + tax_rate)
+# GST amount
+    tax_amount = grand_total - base_amount
     # total_amount = grand_total
     y -= 10
     c.setFont("Helvetica", 10)
@@ -548,9 +550,14 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     y -= 15
     
     # --- NEW: Lucky Number ---
-    lucky_number = order_data.get('lucky_number', 'Not Assigned')
-    c.drawString(50, y, f"Lucky Number: {lucky_number}")
-    y -= 15
+    lucky_numbers = order_data.get('lucky_number', 'Not Assigned')
+    if isinstance(lucky_numbers, list):
+        for ln in lucky_numbers:
+            c.drawString(50, y, f"Lucky Number: {ln}")
+            y -= 15
+    else:
+        c.drawString(50, y, f"Lucky Number: {lucky_numbers}")
+        y -= 15
     c.drawString(50, y, "Keep these numbers safe for future rewards!")
 
     # --- Terms and Conditions ---
@@ -1003,6 +1010,24 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
+#--- lucky number ---
+def generate_unique_lucky_numbers(count: int):
+    lucky_numbers = []
+
+    existing_numbers = supabase.table("lucky_numbers") \
+        .select("lucky_number") \
+        .execute().data
+    existing_set = {row["lucky_number"] for row in existing_numbers}
+
+    while len(lucky_numbers) < count:
+        ln = f"{random.randint(0, 9999999):07d}"
+        if ln not in existing_set:
+            lucky_numbers.append(ln)
+            existing_set.add(ln)
+
+    return lucky_numbers
+
+
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
 
 @app.post("/orders", response_model=Order)
@@ -1058,7 +1083,11 @@ async def create_order(
     contest_id = uuid.uuid4().hex
 
     # NEW: Generate Random 7-digit Lucky Number
-    lucky_number = f"{random.randint(0, 9999999):07d}" # e.g., "0045123"
+    # lucky_number = f"{random.randint(0, 9999999):07d}"
+    lucky_count = int(total_amount // 1000)
+    lucky_numbers = generate_unique_lucky_numbers(lucky_count)
+
+
     
     try:
         order_data = {
@@ -1069,7 +1098,7 @@ async def create_order(
             "payment_status": "Pending",
             "order_status": "Pending",
             "contest_id": contest_id ,# Save to DB
-            "lucky_number": lucky_number, # NEW: Save to DB
+            "lucky_number": lucky_numbers, # NEW: Save to DB
             # NEW: Save the opt-out preference
             "opt_out_delivery": order.opt_out_delivery 
         }
@@ -1077,6 +1106,13 @@ async def create_order(
         if not order_res.data: raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create order record")
         new_order = order_res.data[0]
         new_order_id = new_order["order_id"]
+        # Save each lucky number to lucky_numbers table
+        for ln in lucky_numbers:
+            supabase.table("lucky_numbers").insert({
+                "order_id": new_order_id,
+                "user_id": str(current_user.id),
+                "lucky_number": ln
+            }).execute()
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error creating order in DB: {e}")
 
@@ -1102,7 +1138,7 @@ async def create_order(
                     "internal_order_id": new_order_id,
                     "user_id": str(current_user.id),
                     "contest_id": contest_id, # Save to DB
-                    "lucky_number": lucky_number, # NEW: Save to DB
+                    "lucky_number": lucky_numbers, # NEW: Save to DB
                     "opt_out_delivery": str(order.opt_out_delivery)
                 }
             }
