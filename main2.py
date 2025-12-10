@@ -348,10 +348,12 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     y -= 20
     
     for item in items_data:
-        name = item.get('products', {}).get('product_name', 'Unknown Product')
-        price = item['price_per_unit']
-        qty = item['quantity']
-        subtotal = item['subtotal']
+        product_info = item.get("products") or {}
+        name = product_info.get("product_name", "Unknown Product")
+        price = item.get("price_per_unit") or item.get("price") or 0
+        qty = item.get("quantity") or 1
+        subtotal = item.get("subtotal") or (price * qty)
+
 
         c.drawString(50, y, name[:40]) 
         c.drawString(300, y, f"Rs. {price}")
@@ -1257,44 +1259,48 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
 # --- UPDATED ENDPOINT: Download Invoice (With Payment Check) ---
 @app.get("/orders/{order_id}/invoice")
 async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(get_current_user)):
-    """
-    Generate and download a PDF invoice for a specific order.
-    Only allows download if payment_status is 'Completed'.
-    """
     try:
-        # 1. Fetch Order details
-        order_res = supabase.table("orders").select("*, order_items(*, products:product_id(product_name,price))").eq("order_id", order_id).eq("user_id", str(current_user.id)).single().execute()
-        
+        # 1. Fetch order + order_items + products join
+        order_res = (
+            supabase.table("orders")
+            .select("*, order_items(*, products:product_id(product_name, price, image_url))")
+            .eq("order_id", order_id)
+            .eq("user_id", str(current_user.id))
+            .single()
+            .execute()
+        )
+
         if not order_res.data:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-        
-        order_data = order_res.data[0]
+            raise HTTPException(404, "Order not found")
 
-        # --- NEW SECURITY CHECK ---
-        # Prevent generating invoice for unpaid/pending orders
+        order_data = order_res.data
+
+        # Only paid orders allowed
         if order_data.get("payment_status") != "Completed":
-             raise HTTPException(
-                 status_code=status.HTTP_400_BAD_REQUEST, 
-                 detail="Invoice cannot be generated. Payment is not completed."
-             )
-        # --------------------------
+            raise HTTPException(400, "Invoice cannot be generated until payment is completed.")
 
-        items_data = order_data.get('order_items', [])
+        items_data = order_data.get("order_items", [])
 
-        # 2. Fetch User Profile (for Address)
-        user_res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).maybe_single().execute()
-        user_data = user_res.data[0] if user_res.data else {}
+        # 2. Fetch user profile safely
+        user_res = (
+            supabase.table("profiles")
+            .select("*")
+            .eq("id", str(current_user.id))
+            .maybe_single()
+            .execute()
+        )
 
-        # 3. Generate PDF
+        user_data = user_res.data or {}
+
+        # 3. Generate PDF safely
         pdf_bytes = generate_pdf_invoice(order_data, user_data, items_data)
 
-        # 4. Return as downloadable file
-        headers = {
-            'Content-Disposition': f'attachment; filename="invoice_{order_id}.pdf"'
-        }
-        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="invoice_{order_id}.pdf"'},
+        )
 
     except Exception as e:
-        # If we manually raised the 400 above, allow it to pass through
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        print("INVOICE ERROR:", e)
+        raise HTTPException(500, detail=str(e))
