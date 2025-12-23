@@ -430,12 +430,21 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
     try:
-        user_data = supabase.auth.get_user(jwt=token)
-        user = user_data.user
-        if not user: raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
-        return UserResponse(id=user.id, email=user.email, created_at=user.created_at)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid credentials: {e}")
+        user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        user_client.auth.set_session(token, "")  # Empty refresh token is allowed here
+
+        user = user_client.auth.get_user().user
+        if not user:
+            raise HTTPException(status_code=401, detail="User not found")
+
+        return UserResponse(
+            id=user.id,
+            email=user.email,
+            created_at=user.created_at
+        )
+
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 # --- API Endpoints ---
 
