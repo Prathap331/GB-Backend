@@ -298,8 +298,9 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.drawString(50, height - 85, "Kukatpally, Hyderabad, 500072")
     c.drawString(50, height - 100, "GSTIN: 36AAQCM4860P1ZK")
     c.drawString(50, height - 115, "Contact: support@goldenbanana.online")
+    c.drawString(50, height - 130, "Registered Company: Morpho Technologies Pvt Ltd")
 
-    c.line(50, height - 130, width - 50, height - 130)
+    c.line(50, height - 145, width - 50, height - 145)
 
     # --- Invoice Details ---
     c.setFont("Helvetica-Bold", 10)
@@ -387,9 +388,9 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.drawString(50, y, "Notes:")
     
     c.setFont("Helvetica", 10)
-    y -= 15
-    contest_id = order_data.get('contest_id', 'Not Assigned')
-    c.drawString(50, y, f"Contest ID: {contest_id}")
+    # y -= 15
+    # contest_id = order_data.get('contest_id', 'Not Assigned')
+    # c.drawString(50, y, f"Contest ID: {contest_id}")
     y -= 15
     
     # --- NEW: Lucky Number ---
