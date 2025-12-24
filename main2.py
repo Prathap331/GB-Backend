@@ -300,7 +300,7 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.drawString(50, height - 115, "Contact: support@goldenbanana.online")
     c.drawString(50, height - 130, "Registered Company: Morpho Technologies Pvt Ltd")
 
-    c.line(50, height - 155, width - 50, height - 155)
+    c.line(50, height - 148, width - 50, height - 148)
 
     # --- Invoice Details ---
     c.setFont("Helvetica-Bold", 10)
