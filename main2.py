@@ -158,12 +158,11 @@ class ProductUpdate(BaseModel):
 
 
 
-
-
 # --- NEW: Simple Product schema for nested response ---
 # Must be defined BEFORE OrderItem
 class ProductSimple(BaseModel):
     product_name: str
+    category: Optional[str] = None
     image_url: Optional[str] = None
     class Config: from_attributes = True
 
@@ -356,13 +355,28 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     y -= 20
     
     for item in items_data:
-        name = item.get('products', {}).get('product_name', 'Unknown Product')
+        product = item.get("products") or {}
+
+        name = (
+            item.get("product_name")
+            or product.get("product_name")
+            or "Unknown Item"
+        )
+
+        category = (
+            item.get("category")
+            or product.get("category")
+            or ""
+        )
+
+        display_name = f"{name} {category}".strip()
+
         price = item.get("price_per_unit") or item.get("price") or 0
         qty = item.get("quantity") or 1
         subtotal = item.get("subtotal") or (price * qty)
 
 
-        c.drawString(50, y, name[:40]) 
+        c.drawString(50, y, display_name[:45]) 
         c.drawString(300, y, f"Rs. {price}")
         c.drawString(380, y, str(qty))
         c.drawString(450, y, f"Rs. {subtotal}")
@@ -434,24 +448,16 @@ def generate_pdf_invoice(order_data, user_data, items_data):
 
 
 # --- Authentication ---
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
     try:
         user_client = create_client(
             SUPABASE_URL,
-            SUPABASE_ANON_KEY,
-            options={
-                "global": {
-                    "headers": {
-                        "Authorization": f"Bearer {token}"
-                    }
-                }
-            }
+            SUPABASE_ANON_KEY
         )
 
-        user = user_client.auth.get_user().user
+        user = user_client.auth.get_user(token).user
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
 
@@ -463,6 +469,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
 
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
+
 
 # --- API Endpoints ---
 
@@ -639,29 +646,30 @@ async def reset_password(
 
 
 '''
-
 @app.post("/auth/reset-password")
 async def reset_password(
-    data: UserResetPassword, 
-    token: str = Depends(oauth2_scheme) # Grab the raw token string
+    data: UserResetPassword,
+    token: str = Depends(oauth2_scheme)
 ):
-    """
-    Update the password for the logged-in user.
-    This endpoint requires the Bearer Token obtained from the password reset email link.
-    """
     try:
-        # 1. Create a temporary Supabase client for THIS specific user
-        # We use the raw token passed in the Authorization header
-        user_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-        user_client.auth.set_session(token, "refresh_token_placeholder") # Set session using access token
+        user_client = create_client(
+            SUPABASE_URL,
+            SUPABASE_ANON_KEY,
+            options={
+                "global": {
+                    "headers": {
+                        "Authorization": f"Bearer {token}"
+                    }
+                }
+            }
+        )
 
-        # 2. Update the user's password using this authenticated client
-        # Since we are 'logged in' as the user via the client, we can just call update_user
         user_client.auth.update_user({"password": data.new_password})
-        
         return {"message": "Password updated successfully"}
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 
 
@@ -1055,7 +1063,7 @@ async def create_order(
     return final_order'''
     # FIX: Fetch the order AGAIN to include nested product details for the response
     # This step was previously returning raw dict, skipping model validation and Razorpay key injection.
-    full_order_res = supabase.table("orders").select("*, order_items(*, products(product_name, image_url))").eq("order_id", new_order_id).single().execute()
+    full_order_res = supabase.table("orders").select("*, order_items(*, products(product_name, category, image_url))").eq("order_id", new_order_id).single().execute()
     
     # 1. Convert the DB dictionary to your Pydantic Model
     final_order = Order.model_validate(full_order_res.data)
@@ -1084,8 +1092,10 @@ async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
 async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
     try:
         # The query string here is critical. We ask for products explicitly.
-        res = supabase.table("orders").select("*, order_items(*, products(product_name, image_url))").eq("user_id", str(current_user.id)).order("created_at", desc=True).execute()
-        return res.data
+        res = supabase.table("orders").select("*, order_items(*, products(product_name,category, image_url))").eq("user_id", str(current_user.id)).order("created_at", desc=True).execute()
+        
+        return [Order.model_validate(o) for o in res.data]
+    
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
@@ -1098,8 +1108,10 @@ async def get_my_single_order(order_id: int, current_user: UserResponse = Depend
         if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
         return res.data'''
         # UPDATED QUERY: Fetch nested products(product_name, image_url)
-        res = supabase.table("orders").select("*, order_items(*, products(product_name, image_url))").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
+        res = supabase.table("orders").select("*, order_items(*, products(product_name,category, image_url))").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
         if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+        
+        print("RAW SUPABASE RESPONSE:", json.dumps(res.data, indent=2))
         return res.data
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -1150,7 +1162,7 @@ async def update_order(
         # fetch updated
         final_res = (
             supabase.table("orders")
-            .select("*, order_items(*, products(product_name, image_url))")
+            .select("*, order_items(*, products(product_name,category, image_url))")
             .eq("order_id", order_id)
             .execute()
         )
@@ -1263,7 +1275,7 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
     """
     try:
         # 1. Fetch Order details
-        order_res = supabase.table("orders").select("*, order_items(*, products(product_name))").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
+        order_res = supabase.table("orders").select("*, order_items(*, products(product_name, category))").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
         
         if not order_res.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
