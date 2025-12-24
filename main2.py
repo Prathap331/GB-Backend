@@ -300,11 +300,11 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.drawString(50, height - 115, "Contact: support@goldenbanana.online")
     c.drawString(50, height - 130, "Registered Company: Morpho Technologies Pvt Ltd")
 
-    c.line(50, height - 145, width - 50, height - 145)
+    c.line(50, height - 155, width - 50, height - 155)
 
     # --- Invoice Details ---
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(50, height - 150, f"Invoice #: INV-{order_data['order_id']}")
+    c.drawString(50, height - 170, f"Invoice #: INV-{order_data['order_id']}")
     
     try:
         dt = datetime.fromisoformat(order_data['created_at'].replace('Z', '+00:00'))
@@ -312,8 +312,8 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     except:
         date_str = str(datetime.now().date())
         
-    c.drawString(300, height - 150, f"Invoice Date: {date_str}")
-    c.drawString(50, height - 165, f"Order ID: {order_data.get('razorpay_order_id') or 'N/A'}")
+    c.drawString(300, height - 170, f"Invoice Date: {date_str}")
+    c.drawString(50, height - 185, f"Order ID: {order_data.get('razorpay_order_id') or 'N/A'}")
 
     # --- Bill To / Ship To ---
     y = height - 200
