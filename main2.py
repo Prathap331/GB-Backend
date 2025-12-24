@@ -30,12 +30,19 @@ load_dotenv()
 
 # --- Configuration & Supabase Client ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY") # Use the SERVICE_ROLE key
+# SUPABASE_KEY = os.environ.get("SUPABASE_KEY") # Use the SERVICE_ROLE key
 
-if not SUPABASE_URL or not SUPABASE_KEY:
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
+
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not SUPABASE_ANON_KEY:
     raise Exception("Supabase URL and Key must be set in .env file")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase: Client = create_client(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY
+)
+
 
 # --- Razorpay Configuration ---
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
@@ -427,12 +434,22 @@ def generate_pdf_invoice(order_data, user_data, items_data):
 
 
 # --- Authentication ---
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 
 async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
     try:
-        user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        user_client.auth.set_session(token, "")  # Empty refresh token is allowed here
+        user_client = create_client(
+            SUPABASE_URL,
+            SUPABASE_ANON_KEY,
+            options={
+                "global": {
+                    "headers": {
+                        "Authorization": f"Bearer {token}"
+                    }
+                }
+            }
+        )
 
         user = user_client.auth.get_user().user
         if not user:
@@ -444,8 +461,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
             created_at=user.created_at
         )
 
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=str(e))
 
 # --- API Endpoints ---
 
@@ -532,21 +549,7 @@ async def signup(user: UserCreate):
             )
             
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    
 
 
 # UPDATED: Login endpoint now returns refresh_token
@@ -564,9 +567,6 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect email or password")
-
-
-
 
 
 
@@ -652,7 +652,7 @@ async def reset_password(
     try:
         # 1. Create a temporary Supabase client for THIS specific user
         # We use the raw token passed in the Authorization header
-        user_client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        user_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
         user_client.auth.set_session(token, "refresh_token_placeholder") # Set session using access token
 
         # 2. Update the user's password using this authenticated client
@@ -678,30 +678,19 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
             .execute()
         )
         if not res.data:
-            new_profile = {
-                "id": str(current_user.id),
-                "full_name": None,
-                "phone_number": None,
-                "address_line1": None,
-                "address_line2": None,
-                "city": None,
-                "state": None,
-                "postal_code": None,
-                "country": None,
-                "city_preference": "",
-                "voluntary_consent": False,
-                "fee_consent": False,
-                "account_status": "active",
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-
-            supabase.table("profiles").insert(new_profile).execute()
-            return new_profile
+              raise HTTPException(
+        status_code=404,
+        detail="Profile not created yet"
+    )
         return res.data
+
+    except HTTPException:
+        raise  
 
     except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+            status_code=500,
+            detail=str(e)
         )
 
 
