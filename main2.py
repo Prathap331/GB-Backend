@@ -215,6 +215,9 @@ class Order(BaseModel):
     order_id: int
     user_id: UUID
     order_date: datetime
+    shipping_fee: float | None = None
+    cod_fee: float | None = None
+    gst_amount: float | None = None
     total_amount: float
     payment_method: str
     payment_status: str
@@ -974,7 +977,53 @@ async def create_order(
         elif total_items >= 3:
             discount_rate = 0.30      # 30% off
 
-        discounted_amount = total_amount * (1 - discount_rate)
+        # ---- DISCOUNT + GST + SHIPPING ----
+        discounted_amount =  round(total_amount * (1 - discount_rate), 2)
+
+        # GST on discounted amount
+        gst_amount = round(discounted_amount * 0.05, 2)
+
+        final_amount = round(discounted_amount + gst_amount, 2)
+
+        # SHIPPING LOGIC
+        shipping_fee = 0.0
+        if final_amount < 499:
+            shipping_fee = 55.0
+
+        shipping_fee = round(shipping_fee, 2)
+
+        grand_total = round(final_amount + shipping_fee, 2)
+
+        print(
+            "[PRICE DEBUG]",
+            f"subtotal={total_amount}",
+            f"discount_rate={discount_rate}",
+            f"discounted={discounted_amount}",
+            f"gst={gst_amount}",
+            f"shipping_fee={shipping_fee}",
+            f"grand_total={grand_total}"
+        )
+
+        # ---- COD CHARGES (only when payment method is COD) ----
+        cod_fee = 0.0
+        cod_base = grand_total
+        if order.payment_method == "COD":
+            cod_fee = round(cod_base * 0.02, 2)       # 2% of final total
+
+            if cod_fee < 40:
+                cod_fee = 40.0
+
+            grand_total = round(grand_total + cod_fee, 2)
+
+        print(
+            "[COD DEBUG]",
+            f"cod_base={cod_base}",
+            f"cod_fee={cod_fee}",
+            f"grand_total_after_cod={grand_total}"
+        )
+
+
+
 
 
     except Exception as e:
@@ -997,7 +1046,8 @@ async def create_order(
         order_data = {
             "user_id": str(current_user.id),
             # Apply GST (5%) only on the discounted value
-            "total_amount": discounted_amount + (discounted_amount * 0.05), # GST on discounted amount  
+            # "total_amount": discounted_amount + (discounted_amount * 0.05), # GST on discounted amount  
+            "total_amount": round(grand_total, 2),
             "payment_method": order.payment_method,
             "delivery_address": delivery_address,
             "payment_status": "Pending",
@@ -1047,6 +1097,12 @@ async def create_order(
                     "opt_out_delivery": str(order.opt_out_delivery)
                 }
             }
+            print(
+                "[RZP DEBUG]",
+                f"backend_total={order_data['total_amount']}",
+                f"rzp_amount_paise={rzp_order_data['amount']}"
+            )
+
             rzp_order = razorpay_client.order.create(data=rzp_order_data)
             razorpay_order_id = rzp_order["id"]
             
@@ -1085,6 +1141,10 @@ async def create_order(
     if razorpay_order_id:
         final_order.razorpay_order_id = razorpay_order_id
         final_order.razorpay_key_id = RAZORPAY_KEY_ID 
+    
+    final_order.shipping_fee = shipping_fee
+    final_order.gst_amount = gst_amount
+    final_order.cod_fee = cod_fee
 
     return final_order
 '''
