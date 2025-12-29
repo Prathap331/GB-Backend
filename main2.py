@@ -963,8 +963,20 @@ async def create_order(
                                           "size": item.size,
                 "color": item.color # User selected color
                                           
-                                          
-                                          })
+                                        })
+
+        # ---- DISCOUNT LOGIC (based on number of items, excluding GST) ----
+        total_items = sum(item.quantity for item in order.items)
+
+        discount_rate = 0.0
+        if total_items >= 5:
+            discount_rate = 0.40      # 40% off
+        elif total_items >= 3:
+            discount_rate = 0.30      # 30% off
+
+        discounted_amount = total_amount * (1 - discount_rate)
+
+
     except Exception as e:
         if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error validating products: {e}")
@@ -984,7 +996,8 @@ async def create_order(
     try:
         order_data = {
             "user_id": str(current_user.id),
-            "total_amount": total_amount + (total_amount* 0.05),
+            # Apply GST (5%) only on the discounted value
+            "total_amount": discounted_amount + (discounted_amount * 0.05), # GST on discounted amount  
             "payment_method": order.payment_method,
             "delivery_address": delivery_address,
             "payment_status": "Pending",
@@ -1023,7 +1036,7 @@ async def create_order(
         try:
             # Amount is in paisa (100 paisa = 1 Rupee)
             rzp_order_data = {
-                "amount": float(float(order_data["total_amount"] * 100)), 
+                "amount": int(round(order_data["total_amount"] * 100)),
                 "currency": "INR",
                 "receipt": f"order_rcptid_{new_order_id}",
                 "notes": {
