@@ -286,6 +286,48 @@ class Token(BaseModel):
 
 
 
+def calculate_order_pricing(order, db_products):
+    total_amount = 0.0
+
+    # subtotal
+    for item in order.items:
+        product = db_products[item.product_id]
+        total_amount += float(product["price"]) * item.quantity
+
+    # discount (based on quantity)
+    total_items = sum(item.quantity for item in order.items)
+    discount_rate = 0.4 if total_items >= 5 else 0.3 if total_items >= 3 else 0
+    discount_amount = round(total_amount * discount_rate, 2)
+
+    discounted = round(total_amount - discount_amount, 2)
+
+    # GST (5% after discount)
+    gst_amount = round(discounted * 0.05, 2)
+    final = round(discounted + gst_amount, 2)
+
+    # shipping (below 499)
+    shipping = 49.0 if final < 499 else 0.0
+    grand = round(final + shipping, 2)
+
+    # COD
+    cod_fee = 0.0
+    if order.payment_method == "COD":
+        cod_fee = round(grand * 0.02, 2)
+        if cod_fee < 40:
+            cod_fee = 40.0
+        grand = round(grand + cod_fee, 2)
+
+    return {
+        "subtotal": round(total_amount, 2),
+        "discount": discount_amount,
+        "gst": gst_amount,
+        "shipping_fee": shipping,
+        "cod_fee": cod_fee,
+        "total": grand,
+        "discount_rate": discount_rate
+    }
+
+
 
 def generate_pdf_invoice(order_data, user_data, items_data):
     """
@@ -885,6 +927,23 @@ def generate_unique_lucky_numbers(count: int):
     return lucky_numbers
 
 
+
+@app.post("/orders/price-preview")
+async def price_preview(order: OrderCreate):
+
+    product_ids = [item.product_id for item in order.items]
+    res = supabase.table("products").select(
+        "product_id, price"
+    ).in_("product_id", product_ids).execute()
+
+    db_products = {p["product_id"]: p for p in res.data}
+
+    pricing = calculate_order_pricing(order, db_products)
+
+    return pricing
+
+
+
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
 
 @app.post("/orders", response_model=Order)
@@ -968,62 +1027,16 @@ async def create_order(
                                           
                                         })
 
-        # ---- DISCOUNT LOGIC (based on number of items, excluding GST) ----
-        total_items = sum(item.quantity for item in order.items)
+        # ---- USE SHARED PRICING FUNCTION ----
+        pricing = calculate_order_pricing(order, db_products)
 
-        discount_rate = 0.0
-        if total_items >= 5:
-            discount_rate = 0.40      # 40% off
-        elif total_items >= 3:
-            discount_rate = 0.30      # 30% off
+        grand_total   = pricing["total"]
+        gst_amount    = pricing["gst"]
+        shipping_fee  = pricing["shipping_fee"]
+        cod_fee       = pricing["cod_fee"]
+        discount_rate = pricing["discount_rate"]
 
-        # ---- DISCOUNT + GST + SHIPPING ----
-        discounted_amount =  round(total_amount * (1 - discount_rate), 2)
-
-        # GST on discounted amount
-        gst_amount = round(discounted_amount * 0.05, 2)
-
-        final_amount = round(discounted_amount + gst_amount, 2)
-
-        # SHIPPING LOGIC
-        shipping_fee = 0.0
-        if final_amount < 499:
-            shipping_fee = 55.0
-
-        shipping_fee = round(shipping_fee, 2)
-
-        grand_total = round(final_amount + shipping_fee, 2)
-
-        print(
-            "[PRICE DEBUG]",
-            f"subtotal={total_amount}",
-            f"discount_rate={discount_rate}",
-            f"discounted={discounted_amount}",
-            f"gst={gst_amount}",
-            f"shipping_fee={shipping_fee}",
-            f"grand_total={grand_total}"
-        )
-
-        # ---- COD CHARGES (only when payment method is COD) ----
-        cod_fee = 0.0
-        cod_base = grand_total
-        if order.payment_method == "COD":
-            cod_fee = round(cod_base * 0.02, 2)       # 2% of final total
-
-            if cod_fee < 40:
-                cod_fee = 40.0
-
-            grand_total = round(grand_total + cod_fee, 2)
-
-        print(
-            "[COD DEBUG]",
-            f"cod_base={cod_base}",
-            f"cod_fee={cod_fee}",
-            f"grand_total_after_cod={grand_total}"
-        )
-
-
-
+        print("[PRICE PREVIEW]", pricing)
 
 
     except Exception as e:
@@ -1045,8 +1058,6 @@ async def create_order(
     try:
         order_data = {
             "user_id": str(current_user.id),
-            # Apply GST (5%) only on the discounted value
-            # "total_amount": discounted_amount + (discounted_amount * 0.05), # GST on discounted amount  
             "total_amount": round(grand_total, 2),
             "payment_method": order.payment_method,
             "delivery_address": delivery_address,
