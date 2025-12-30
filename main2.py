@@ -73,6 +73,8 @@ app.add_middleware(
 # Profile Schemas
 class ProfileBase(BaseModel):
     full_name: Optional[str] = None
+    email: Optional[str] = None
+    gender: Optional[str] = None
     phone_number: Optional[str] = None
     address_line1: Optional[str] = None
     address_line2: Optional[str] = None
@@ -732,6 +734,8 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
             profile = {
                 "id": str(current_user.id),
                 "full_name": current_user.email.split("@")[0],
+                "email": current_user.email,
+                "gender": None,
                 "phone_number": None,
                 "address_line1": None,
                 "address_line2": None,
