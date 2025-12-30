@@ -732,6 +732,16 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
             profile = {
                 "id": str(current_user.id),
                 "full_name": current_user.email.split("@")[0],
+                "phone_number": None,
+                "address_line1": None,
+                "address_line2": None,
+                "city": None,
+                "state": None,
+                "postal_code": None,
+                "country": None,
+                "city_preference": "",
+                "voluntary_consent": False,
+                "fee_consent": False,
                 "account_status": "active",
                 "updated_at": datetime.utcnow().isoformat(),
             }
@@ -743,13 +753,13 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
         return res.data
 
     except HTTPException:
-        raise  
-
+        raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        import traceback
+        print("PROFILE ERROR:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 
