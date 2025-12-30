@@ -726,11 +726,20 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
             .maybe_single()
             .execute()
         )
+
+        # --- AUTO CREATE PROFILE FOR GOOGLE USERS ---
         if not res.data:
-              raise HTTPException(
-        status_code=404,
-        detail="Profile not created yet"
-    )
+            profile = {
+                "id": str(current_user.id),
+                "full_name": current_user.email.split("@")[0],
+                "account_status": "active",
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+
+            insert_res = supabase.table("profiles").insert(profile).execute()
+            return insert_res.data[0]
+        # -------------------------------------------
+
         return res.data
 
     except HTTPException:
