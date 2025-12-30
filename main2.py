@@ -728,7 +728,7 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
         )
 
         # --- AUTO CREATE PROFILE FOR GOOGLE USERS ---
-        if not res.data:
+        if not res or not res.data:
             profile = {
                 "id": str(current_user.id),
                 "full_name": current_user.email.split("@")[0],
