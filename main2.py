@@ -339,7 +339,7 @@ def generate_pdf_invoice(order_data, user_data, items_data):
 
     # --- Header ---
     c.setFont("Helvetica-Bold", 20)
-    c.drawString(50, height - 50, "Golden Banana")
+    c.drawString(50, height - 50, "Qdio")
     
     c.setFont("Helvetica", 12)
     c.drawRightString(width - 50, height - 50, "TAX INVOICE")
@@ -348,7 +348,7 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.drawString(50, height - 70, "Flat no. 502, Meenakshi enclave MIG 891 KPHB phase 3")
     c.drawString(50, height - 85, "Kukatpally, Hyderabad, 500072")
     c.drawString(50, height - 100, "GSTIN: 36AAQCM4860P1ZK")
-    c.drawString(50, height - 115, "Contact: support@goldenbanana.online")
+    c.drawString(50, height - 115, "Contact: support@qdio.shop")
     c.drawString(50, height - 130, "Registered Company: Morpho Technologies Pvt Ltd")
 
     c.line(50, height - 148, width - 50, height - 148)
@@ -482,7 +482,7 @@ def generate_pdf_invoice(order_data, user_data, items_data):
     c.drawString(50, y, "2. All disputes are subject to Hyderabad jurisdiction only.")
 
     c.setFont("Helvetica-Oblique", 8)
-    c.drawCentredString(width / 2, 50, "Thank you for shopping with Golden Banana!")
+    c.drawCentredString(width / 2, 50, "Thank you for shopping with Qdio!")
     c.drawCentredString(width / 2, 35, "This is a computer generated invoice.")
 
     c.save()
@@ -644,8 +644,8 @@ async def forgot_password(data: UserForgotPassword):
         # UPDATE: Set the redirect URL explicitly.
         # Change this URL to your actual frontend reset page.
         # Example for local testing: "http://localhost:3000/reset-password"
-        # Example for production: "https://goldenbanana.vercel.app/reset-password"
-        redirect_url = "https://www.goldenbanana.online/reset-password" 
+        # Example for production: "https://goldenbanana.vercel.app/reset-password"  
+        redirect_url = "https://www.qdio.shop/reset-password" 
         
         supabase.auth.reset_password_email(data.email, options={"redirectTo": redirect_url})
     
@@ -697,16 +697,12 @@ async def reset_password(
     token: str = Depends(oauth2_scheme)
 ):
     try:
-        user_client = create_client(
-            SUPABASE_URL,
-            SUPABASE_ANON_KEY,
-            options={
-                "global": {
-                    "headers": {
-                        "Authorization": f"Bearer {token}"
-                    }
-                }
-            }
+        user_client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+        # Attach the token to this client session
+        user_client.auth.set_session(
+            access_token=token,
+            refresh_token=""
         )
 
         user_client.auth.update_user({"password": data.new_password})
@@ -1195,7 +1191,7 @@ async def get_my_single_order(order_id: int, current_user: UserResponse = Depend
         res = supabase.table("orders").select("*, order_items(*, products(product_name,category, image_url))").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
         if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
         
-        print("RAW SUPABASE RESPONSE:", json.dumps(res.data, indent=2))
+       
         return res.data
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
