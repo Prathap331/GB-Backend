@@ -1,642 +1,104 @@
-import os
-import io
-import json
+# routers.py
+from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
+from typing import List
+from datetime import datetime, timezone
 import uuid
-import time
-import random
-
-from datetime import datetime, date, timezone
-from typing import List, Optional, Dict
-
+from fastapi import Header, HTTPException
+import json
 import razorpay
-from dotenv import load_dotenv
-from supabase import create_client, Client
 
-from fastapi import FastAPI, Depends, HTTPException, status, Response
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.middleware.cors import CORSMiddleware
+from supabase import create_client
+from services import (
+    SYNC_SECRET,
+    fetch_supplier_products,
+    supabase,
+    razorpay_client,
+    RAZORPAY_KEY_ID,
+    get_current_user
+)
+from schemas import (
+    Product, ProductUpdate, 
+    Order, OrderCreate, OrderUpdate,
+    Profile, ProfileBase,
+    DeliveryPartner,
+    PaymentVerificationRequest,
+    UserCreate, UserForgotPassword, UserResetPassword, UserResponse,
+    Token,
+)
 
-from pydantic import BaseModel, EmailStr, Field
-from uuid import UUID
+from utils import (
+    calculate_order_pricing,
+    generate_pdf_invoice,
+    generate_unique_lucky_numbers,
+    map_supplier_product,
+    upsert_product,
+)
 
-# PDF Generator
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
-from reportlab.lib.utils import ImageReader
-from reportlab.lib import colors
-
-# Load environment variables
-load_dotenv()
-
-# --- Configuration & Supabase Client ---
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-# SUPABASE_KEY = os.environ.get("SUPABASE_KEY") # Use the SERVICE_ROLE key
-
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
-
-if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not SUPABASE_ANON_KEY:
-    raise Exception("Supabase URL and Key must be set in .env file")
-
-supabase: Client = create_client(
-    SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY
+from services import (
+    SUPABASE_URL, SUPABASE_ANON_KEY,
 )
 
 
-# --- Razorpay Configuration ---
-RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
+router = APIRouter()
 
-if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
-    raise Exception("Razorpay Key ID and Secret must be set in .env file")
-
-# Initialize Razorpay client
-razorpay_client = razorpay.Client(
-    auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET),
-    timeout=10
-)
-
-app = FastAPI(title="E-Commerce Backend v3 (Razorpay)")
-
-# --- CORS Middleware ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- Pydantic Schemas ---
-
-# Profile Schemas
-class ProfileBase(BaseModel):
-    full_name: Optional[str] = None
-    email: Optional[str] = None
-    gender: Optional[str] = None
-    phone_number: Optional[str] = None
-    address_line1: Optional[str] = None
-    address_line2: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    postal_code: Optional[str] = None
-    country: Optional[str] = None
-
-
-    # --- NEW CONTEST PREFERENCE FIELDS ---
-    city_preference: Optional[str] = None
-    voluntary_consent: Optional[bool] = None
-    fee_consent: Optional[bool] = None
-
-
-class Profile(ProfileBase):
-    id: UUID
-    account_status: str
-    updated_at: datetime
-    class Config: from_attributes = True
-
-# Product Schemas
-class Product(BaseModel):
-    product_id: int
-    base_product_id: Optional[int] = None
-    product_name: str
-    category: Optional[str] = None
-    description: Optional[str] = None
-    price: float
-    mrp: Optional[float] = None
-    stock_quantity: int
-    unit: Optional[str] = None
-    image_url: Optional[str] = None
-    is_active: bool
-    created_at: datetime
-    updated_at: datetime
-
-
-
-    # Product Variants
-    #size: Optional[str] = None
-    #color: Optional[str] = None # NEW: Color Field
-
-    # CHANGED: These are now Lists of Strings
-    sizes: Optional[List[str]] = Field(default_factory=list)
-    color: Optional[str] = None
-    
-
-    # FIX IS HERE: Changed from List[str] to Dict
-    images: Optional[List[str]] = None
-
-
-       # --- NEW CLOTHING DETAIL FIELDS ---
-    Design: Optional[str] = None
-    Fit: Optional[str] = None
-    Neck: Optional[str] = None
-    Sleeve_type: Optional[str] = None
-    Wash_care: Optional[str] = None
-    Product_description: Optional[str] = None
-
-    class Config: from_attributes = True
-
-
-
-# UPDATED: Product Update Schema
-class ProductUpdate(BaseModel):
-    sizes: Optional[List[str]] = None
-    color: Optional[str] = None
-    #images: Optional[List[str]] = None
-
-    # UPDATED: Allow updating the complex image structure
-    images: Optional[List[str]] = None
-
-     # NEW
-    Design: Optional[str] = None
-    Fit: Optional[str] = None
-    Neck: Optional[str] = None
-    Sleeve_type: Optional[str] = None
-    Wash_care: Optional[str] = None
-    Product_description: Optional[str] = None
-
-
-
-
-
-# --- NEW: Simple Product schema for nested response ---
-# Must be defined BEFORE OrderItem
-class ProductSimple(BaseModel):
-    product_name: str
-    category: Optional[str] = None
-    image_url: Optional[str] = None
-    class Config: from_attributes = True
-
-# Delivery Partner Schemas
-class DeliveryPartner(BaseModel):
-    delivery_partner_id: int
-    partner_name: str
-    contact_number: Optional[str] = None
-    status: str
-    class Config: from_attributes = True
-
-# Order Schemas
-class OrderItemCreate(BaseModel):
-    product_id: int
-    quantity: int
-    # NEW: Allow frontend to send this
-
-    size: Optional[str] = None 
-    color: Optional[str] = None # NEW: User selects color
-    opt_out_delivery: bool = False
-
-class OrderItem(BaseModel):
-    order_item_id: int
-    order_id: int
-    product_id: int
-    quantity: int
-    price_per_unit: float
-    subtotal: float
-
-    size: Optional[str] = None 
-    color: Optional[str] = None # NEW: Saved color
-
-
-     
-    # UPDATED: Nested product info
-    products: Optional[ProductSimple] = None 
-    class Config: from_attributes = True
-
-class OrderCreate(BaseModel):
-    items: List[OrderItemCreate]
-    payment_method: str # 'COD', 'Online', 'Wallet'
-    opt_out_delivery: bool = False
-
-# Add this near your other schemas (like OrderCreate)
-class OrderUpdate(BaseModel):
-    opt_out_delivery: bool
-
-# UPDATED: Order Response with Razorpay fields
-class Order(BaseModel):
-    order_id: int
-    user_id: UUID
-    order_date: datetime
-    shipping_fee: float | None = None
-    cod_fee: float | None = None
-    gst_amount: float | None = None
-    total_amount: float
-    payment_method: str
-    payment_status: str
-    order_status: str
-    delivery_partner_id: Optional[int] = None
-    delivery_address: str
-    delivery_expected_date: Optional[date] = None
-    created_at: datetime
-    items: List[OrderItem] = Field(default=[], validation_alias="order_items")
-    #items: List[OrderItem] = []
-
-    # New fields for Razorpay
-    razorpay_order_id: Optional[str] = None
-    razorpay_key_id: Optional[str] = None 
-
-    # NEW: Contest ID Field
-    contest_id: Optional[str] = None
-
-
-    lucky_number: Optional[List[str]] = None # NEW: Lucky Number field
-     # NEW: Return this in the response
-    opt_out_delivery: bool
-
-    class Config:
-        from_attributes = True
-
-# NEW: Payment Verification Schema
-class PaymentVerificationRequest(BaseModel):
-    razorpay_payment_id: str
-    razorpay_order_id: str
-    razorpay_signature: str
-    order_id: int
-
-# Auth Schemas
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
-    full_name: Optional[str] = None
-    phone_number: Optional[str] = None
-
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-
-# NEW: Forgot Password Schemas
-class UserForgotPassword(BaseModel):
-    email: EmailStr
-
-class UserResetPassword(BaseModel):
-    new_password: str
-
-class UserResponse(BaseModel):
-    id: UUID
-    email: EmailStr
-    created_at: datetime
-
-
-
-
-# UPDATED: Added refresh_token field
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    refresh_token: str 
-
-
-
-def calculate_order_pricing(order, db_products):
-    total_amount = 0.0
-
-    # subtotal
-    for item in order.items:
-        product = db_products[item.product_id]
-        total_amount += float(product["price"]) * item.quantity
-
-    # discount (based on quantity)
-    total_items = sum(item.quantity for item in order.items)
-    discount_rate = 0.4 if total_items >= 5 else 0.3 if total_items >= 3 else 0
-    discount_amount = round(total_amount * discount_rate, 2)
-
-    discounted = round(total_amount - discount_amount, 2)
-
-    # GST (5% after discount)
-    gst_amount = round(discounted * 0.05, 2)
-    final = round(discounted + gst_amount, 2)
-
-    # shipping (below 499)
-    shipping = 49.0 if final < 499 else 0.0
-    grand = round(final + shipping, 2)
-
-    # COD
-    cod_fee = 0.0
-    if order.payment_method == "COD":
-        cod_fee = round(grand * 0.02, 2)
-        if cod_fee < 40:
-            cod_fee = 40.0
-        grand = round(grand + cod_fee, 2)
-
-    return {
-        "subtotal": round(total_amount, 2),
-        "discount": discount_amount,
-        "gst": gst_amount,
-        "shipping_fee": shipping,
-        "cod_fee": cod_fee,
-        "total": grand,
-        "discount_rate": discount_rate
-    }
-
-
-
-def generate_pdf_invoice(order_data, user_data, items_data):
-    """
-    Generates a PDF invoice in memory and returns the bytes.
-    """
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    width, height = letter
-
-    # --- Header ---
-    c.setFont("Helvetica-Bold", 20)
-    c.drawString(50, height - 50, "Qdio")
-    
-    c.setFont("Helvetica", 12)
-    c.drawRightString(width - 50, height - 50, "TAX INVOICE")
-
-    c.setFont("Helvetica", 10)
-    c.drawString(50, height - 70, "Flat no. 502, Meenakshi enclave MIG 891 KPHB phase 3")
-    c.drawString(50, height - 85, "Kukatpally, Hyderabad, 500072")
-    c.drawString(50, height - 100, "GSTIN: 36AAQCM4860P1ZK")
-    c.drawString(50, height - 115, "Contact: support@qdio.shop")
-    c.drawString(50, height - 130, "Registered Company: Morpho Technologies Pvt Ltd")
-
-    c.line(50, height - 148, width - 50, height - 148)
-
-    # --- Invoice Details ---
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(50, height - 170, f"Invoice #: INV-{order_data['order_id']}")
-    
-    try:
-        dt = datetime.fromisoformat(order_data['created_at'].replace('Z', '+00:00'))
-        date_str = dt.strftime("%d %b %Y")
-    except:
-        date_str = str(datetime.now().date())
-        
-    c.drawString(300, height - 170, f"Invoice Date: {date_str}")
-    c.drawString(50, height - 185, f"Order ID: {order_data.get('razorpay_order_id') or 'N/A'}")
-
-    # --- Bill To / Ship To ---
-    y = height - 200
-    c.drawString(50, y, "Bill To / Ship To:")
-    c.setFont("Helvetica", 10)
-    y -= 15
-    c.drawString(50, y, user_data.get('full_name') or "Customer")
-    y -= 15
-    
-    address_lines = user_data.get('address_line1', '').split('\n')
-    for line in address_lines:
-        c.drawString(50, y, line)
-        y -= 12
-    
-    c.drawString(50, y, f"{user_data.get('city', '')}, {user_data.get('state', '')} - {user_data.get('postal_code', '')}")
-    y -= 15
-    c.drawString(50, y, f"Phone: {user_data.get('phone_number', '')}")
-
-    # --- Items Table Header ---
-    y = height - 300
-    c.line(50, y, width - 50, y)
-    y -= 15
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(50, y, "Item")
-    c.drawString(300, y, "Rate")
-    c.drawString(380, y, "Qty")
-    c.drawString(450, y, "Total")
-    y -= 10
-    c.line(50, y, width - 50, y)
-
-    # --- Items Rows ---
-    c.setFont("Helvetica", 10)
-    y -= 20
-    
-    for item in items_data:
-        product = item.get("products") or {}
-
-        name = (
-            item.get("product_name")
-            or product.get("product_name")
-            or "Unknown Item"
-        )
-
-        category = (
-            item.get("category")
-            or product.get("category")
-            or ""
-        )
-
-        display_name = f"{name} {category}".strip()
-
-        price = item.get("price_per_unit") or item.get("price") or 0
-        qty = item.get("quantity") or 1
-        subtotal = item.get("subtotal") or (price * qty)
-
-
-        c.drawString(50, y, display_name[:45]) 
-        c.drawString(300, y, f"Rs. {price}")
-        c.drawString(380, y, str(qty))
-        c.drawString(450, y, f"Rs. {subtotal}")
-        y -= 20
-
-    c.line(50, y, width - 50, y)
-
-    # --- Totals ---
-    grand_total = float(order_data['total_amount'])
-    tax_rate = 0.05
-# Base amount (without GST)
-    base_amount = grand_total / (1 + tax_rate)
-# GST amount
-    tax_amount = grand_total - base_amount
-    # total_amount = grand_total
-    y -= 10
-    c.setFont("Helvetica", 10)
-    
-    c.drawRightString(width - 50, y, f"Subtotal: Rs. {base_amount:.2f}")
-    y -= 15
-    c.drawRightString(width - 50, y, f"CGST/SGST (5%): Rs. {tax_amount:.2f}")
-    y -= 20 
-    
-    c.setFont("Helvetica-Bold", 14)
-    c.drawRightString(width - 50, y, f"Grand Total: Rs. {grand_total:.2f}")
-    
-    # --- Notes Section ---
-    y -= 40
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(50, y, "Notes:")
-    
-    c.setFont("Helvetica", 10)
-    # y -= 15
-    # contest_id = order_data.get('contest_id', 'Not Assigned')
-    # c.drawString(50, y, f"Contest ID: {contest_id}")
-    y -= 15
-    
-    # --- NEW: Lucky Number ---
-    lucky_numbers = order_data.get('lucky_number', 'Not Assigned')
-    if isinstance(lucky_numbers, list):
-        for ln in lucky_numbers:
-            c.drawString(50, y, f"Lucky Number: {ln}")
-            y -= 15
-    else:
-        c.drawString(50, y, f"Lucky Number: {lucky_numbers}")
-        y -= 15
-    c.drawString(50, y, "Keep these numbers safe for future rewards!")
-
-    # --- Terms and Conditions ---
-    y -= 40
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(50, y, "Terms & Conditions:")
-    
-    c.setFont("Helvetica", 9)
-    y -= 15
-    c.drawString(50, y, "1. Your contest lucky number becomes invalid if you return the product.")
-    y -= 12
-    c.drawString(50, y, "2. All disputes are subject to Hyderabad jurisdiction only.")
-
-    c.setFont("Helvetica-Oblique", 8)
-    c.drawCentredString(width / 2, 50, "Thank you for shopping with Qdio!")
-    c.drawCentredString(width / 2, 35, "This is a computer generated invoice.")
-
-    c.save()
-    buffer.seek(0)
-    return buffer.read()
-
-
-
-
-# --- Authentication ---
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
-    try:
-        user_client = create_client(
-            SUPABASE_URL,
-            SUPABASE_ANON_KEY
-        )
 
-        user = user_client.auth.get_user(token).user
-        if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-
-        return UserResponse(
-            id=user.id,
-            email=user.email,
-            created_at=user.created_at
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
-
-# --- API Endpoints ---
-
-@app.get("/")
+@router.get("/")
 def read_root():
     return {"message": "Welcome to the E-Commerce API v3 (Razorpay)"}
 
-# --- Auth Endpoints ---
-'''
-@app.post("/auth/signup", response_model=UserResponse)
-async def signup(user: UserCreate):
-    try:
-        res = supabase.auth.sign_up({"email": user.email, "password": user.password, "options": {"data": {"full_name": user.full_name, "phone": user.phone_number}}})
-        if res.user: return UserResponse(id=res.user.id, email=res.user.email, created_at=res.user.created_at)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create user")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-'''
 
-@app.post("/auth/signup", response_model=UserResponse)
+# AUTH ROUTERS
+
+@router.post("/auth/signup", response_model=UserResponse)
 async def signup(user: UserCreate):
     try:
         res = supabase.auth.sign_up({
             "email": user.email,
             "password": user.password,
-            "options": {
-                "data": {
-                    "full_name": user.full_name,
-                    "phone": user.phone_number
-                }
-            }
+            "options": {"data": {"full_name": user.full_name, "phone": user.phone_number}}
         })
-        
+
         if res.user:
-            # --- THE "SHERLOCK HOLMES" CHECK ---
-            
-            # 1. Check if this user ID actually made it into our 'profiles' table.
-            # If the email was a duplicate, Supabase sends a FAKE user with a random ID 
-            # that will NOT exist in our database.
             profile_check = supabase.table("profiles").select("id").eq("id", res.user.id).execute()
-            
-            # If the list is empty, it was a fake success (Duplicate Email)
+
             if not profile_check.data:
-                 raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT, 
-                    detail="Account already exists. Please login instead."
-                )
+                raise HTTPException(status_code=409, detail="Account already exists. Please login instead.")
 
-            # 2. (Backup Check) If it IS a real user object but from the past 
-            # (in case settings change later), check the timestamp.
-            user_created_at = res.user.created_at
-            
-            # Handle both string and datetime formats safely
-            if isinstance(user_created_at, str):
-                user_created_at = datetime.fromisoformat(user_created_at.replace("Z", "+00:00"))
-            
-            # Ensure timezone awareness
-            if user_created_at.tzinfo is None:
-                user_created_at = user_created_at.replace(tzinfo=timezone.utc)
-                
-            now = datetime.now(timezone.utc)
-            if (now - user_created_at).total_seconds() > 30:
-                 raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT, 
-                    detail="Account already exists. Please login instead."
-                )
+            return UserResponse(id=res.user.id, email=res.user.email, created_at=res.user.created_at)
 
-            return UserResponse(
-                id=res.user.id,
-                email=res.user.email,
-                created_at=res.user.created_at
-            )
-            
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not create user")
+        raise HTTPException(400, "Could not create user")
 
     except Exception as e:
         if isinstance(e, HTTPException): raise e
-        
-        error_msg = str(e)
-        if "User already registered" in error_msg or "already exists" in error_msg:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, 
-                detail="Account already exists. Please login instead."
-            )
-            
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    
+        raise HTTPException(400, str(e))
 
 
-# UPDATED: Login endpoint now returns refresh_token
-@app.post("/auth/login", response_model=Token)
+# login
+@router.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     try:
         res = supabase.auth.sign_in_with_password({
-            "email": form_data.username, 
+            "email": form_data.username,
             "password": form_data.password
         })
         return Token(
             access_token=res.session.access_token,
-            refresh_token=res.session.refresh_token, # Extracting refresh token
+            refresh_token=res.session.refresh_token,
             token_type="bearer"
         )
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Incorrect email or password")
+    except:
+        raise HTTPException(400, "Incorrect email or password")
 
 
-
-
-
-@app.get("/auth/me", response_model=UserResponse)
+@router.get("/auth/me", response_model=UserResponse)
 async def get_me(current_user: UserResponse = Depends(get_current_user)):
     return current_user
 
 
-
-
-
-# --- NEW: Forgot Password Endpoints ---
-
-@app.post("/auth/forgot-password")
+@router.post("/auth/forgot-password")
 async def forgot_password(data: UserForgotPassword):
     """
     Trigger a password reset email via Supabase.
@@ -673,27 +135,7 @@ async def forgot_password(data: UserForgotPassword):
 
 
 
-
-'''
-@app.post("/auth/reset-password")
-async def reset_password(
-    data: UserResetPassword, 
-    current_user: UserResponse = Depends(get_current_user)
-):
-    """
-    Update the password for the logged-in user.
-    This endpoint requires the Bearer Token obtained from the password reset email link.
-    """
-    try:
-        attributes = {"password": data.new_password}
-        supabase.auth.update_user(attributes)
-        return {"message": "Password updated successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-
-'''
-@app.post("/auth/reset-password")
+@router.post("/auth/reset-password")
 async def reset_password(
     data: UserResetPassword,
     token: str = Depends(oauth2_scheme)
@@ -718,7 +160,7 @@ async def reset_password(
 
 
 # --- Profile Endpoints ---
-@app.get("/profiles/me", response_model=Profile)
+@router.get("/profiles/me", response_model=Profile)
 async def get_my_profile(current_user: UserResponse = Depends(get_current_user)):
     try:
         res = (
@@ -768,7 +210,7 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
 
 
 
-@app.put("/profiles/me", response_model=Profile)
+@router.put("/profiles/me", response_model=Profile)
 async def update_my_profile(profile: ProfileBase, current_user: UserResponse = Depends(get_current_user)):
     try:
         update_data = profile.model_dump(exclude_unset=True)
@@ -782,7 +224,7 @@ async def update_my_profile(profile: ProfileBase, current_user: UserResponse = D
 
 # --- Product Endpoints ---
 
-@app.get("/products", response_model=List[Product])
+@router.get("/products", response_model=List[Product])
 async def get_products():
     try:
         res = supabase.table("products").select("*").order("created_at", desc=True).execute()
@@ -802,7 +244,7 @@ async def get_products():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/products/{product_id}", response_model=Product)
+@router.get("/products/{product_id}", response_model=Product)
 async def get_product(product_id: int):
     try:
         res = supabase.table("products").select("*").eq("product_id", product_id).single().execute()
@@ -823,7 +265,7 @@ async def get_product(product_id: int):
         raise HTTPException(500, detail=str(e))
 
 
-@app.get("/products/base/{base_product_id}", response_model=List[Product])
+@router.get("/products/base/{base_product_id}", response_model=List[Product])
 async def get_products_by_base_id(base_product_id: int):
     try:
         res = (
@@ -851,43 +293,8 @@ async def get_products_by_base_id(base_product_id: int):
 
 
 
-
-
-
-'''
-# --- Update Product (Size & Color) Endpoint ---
-@app.put("/products/{product_id}", response_model=Product)
-async def update_product(
-    product_id: int, 
-    product_update: ProductUpdate,
-    current_user: UserResponse = Depends(get_current_user)
-):
-    try:
-        update_data = product_update.model_dump(exclude_unset=True)
-        if not update_data:
-             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
-
-        update_data["updated_at"] = datetime.now().isoformat()
-        res = supabase.table("products").update(update_data).eq("product_id", product_id).execute()
-        if not res.data or len(res.data) == 0:
-             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found or update failed")
-        return res.data[0]
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-'''
-
-
-
-
-
-
-
-
-
-
 # --- Updated Product Update (Handles Arrays) ---
-@app.put("/products/{product_id}", response_model=Product)
+@router.put("/products/{product_id}", response_model=Product)
 async def update_product(
     product_id: int, 
     product_update: ProductUpdate,
@@ -905,8 +312,6 @@ async def update_product(
         return res.data[0]
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-
 
 
 
@@ -920,7 +325,7 @@ async def update_product(
 
 # --- Delivery Partner Endpoints ---
 
-@app.get("/delivery-partners", response_model=List[DeliveryPartner])
+@router.get("/delivery-partners", response_model=List[DeliveryPartner])
 async def get_delivery_partners(current_user: UserResponse = Depends(get_current_user)):
     try:
         res = supabase.table("delivery_partners").select("*").execute()
@@ -928,26 +333,12 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-#--- lucky number ---
-def generate_unique_lucky_numbers(count: int):
-    lucky_numbers = []
-
-    existing_numbers = supabase.table("lucky_numbers") \
-        .select("lucky_number") \
-        .execute().data
-    existing_set = {row["lucky_number"] for row in existing_numbers}
-
-    while len(lucky_numbers) < count:
-        ln = f"{random.randint(0, 9999999):07d}"
-        if ln not in existing_set:
-            lucky_numbers.append(ln)
-            existing_set.add(ln)
-
-    return lucky_numbers
 
 
 
-@app.post("/orders/price-preview")
+
+
+@router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
 
     product_ids = [item.product_id for item in order.items]
@@ -965,7 +356,7 @@ async def price_preview(order: OrderCreate):
 
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
 
-@app.post("/orders", response_model=Order)
+@router.post("/orders", response_model=Order)
 async def create_order(
     order: OrderCreate,
     current_user: UserResponse = Depends(get_current_user)
@@ -1040,11 +431,19 @@ async def create_order(
             price_per_unit = float(product["price"])
             subtotal = price_per_unit * item.quantity
             total_amount += subtotal
-            order_items_to_create.append({"product_id": item.product_id, "quantity": item.quantity, "price_per_unit": price_per_unit, "subtotal": subtotal,
-                                          "size": item.size,
-                "color": item.color # User selected color
-                                          
-                                        })
+            order_items_to_create.append({
+                            "product_id": item.product_id,
+                            "quantity": item.quantity,
+                            "price_per_unit": price_per_unit,
+                            "subtotal": subtotal,
+
+                            # NEW — store supplier info
+                            "supplier_id": product["supplier_id"],
+                            "supplier_product_id": product["supplier_product_id"],
+
+                            "size": item.size,
+                            "color": item.color
+                        })
 
         # ---- USE SHARED PRICING FUNCTION ----
         pricing = calculate_order_pricing(order, db_products)
@@ -1177,21 +576,10 @@ async def create_order(
     final_order.cod_fee = cod_fee
 
     return final_order
-'''
-@app.get("/orders/me", response_model=List[Order])
-async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
-    try:
-        res = supabase.table("orders").select("*, order_items(*)").eq("user_id", str(current_user.id)).order("created_at", desc=True).execute()
-        return res.data
-    
-        
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-    '''
 
 
 
-@app.get("/orders/me", response_model=List[Order])
+@router.get("/orders/me", response_model=List[Order])
 async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
     try:
         # The query string here is critical. We ask for products explicitly.
@@ -1203,7 +591,7 @@ async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-@app.get("/orders/me/{order_id}", response_model=Order)
+@router.get("/orders/me/{order_id}", response_model=Order)
 async def get_my_single_order(order_id: int, current_user: UserResponse = Depends(get_current_user)):
     try:
         '''
@@ -1222,7 +610,7 @@ async def get_my_single_order(order_id: int, current_user: UserResponse = Depend
 # --- NEW: PAYMENT VERIFICATION ENDPOINT ---
 
 
-@app.put("/orders/{order_id}", response_model=Order)
+@router.put("/orders/{order_id}", response_model=Order)
 async def update_order(
     order_id: int,
     order_update: OrderUpdate,
@@ -1286,7 +674,7 @@ async def update_order(
         )
 
 
-@app.post("/payment/verify")
+@router.post("/payment/verify")
 async def verify_payment(
     data: PaymentVerificationRequest,
     current_user: UserResponse = Depends(get_current_user)
@@ -1333,44 +721,8 @@ async def verify_payment(
     
 
 
-'''
-
-# --- NEW ENDPOINT: Download Invoice ---
-@app.get("/orders/{order_id}/invoice")
-async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(get_current_user)):
-    """
-    Generate and download a PDF invoice for a specific order.
-    """
-    try:
-        # 1. Fetch Order details (including Items)
-        order_res = supabase.table("orders").select("*, order_items(*, products(*))").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
-        
-        if not order_res.data:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-        
-        order_data = order_res.data[0]
-        items_data = order_data.get('order_items', [])
-
-        # 2. Fetch User Profile (for Address)
-        user_res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).single().execute()
-        user_data = user_res.data or {}
-
-        # 3. Generate PDF
-        pdf_bytes = generate_pdf_invoice(order_data, user_data, items_data)
-
-        # 4. Return as downloadable file
-        headers = {
-            'Content-Disposition': f'attachment; filename="invoice_{order_id}.pdf"'
-        }
-        return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
-
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
-
-'''
-
 # --- UPDATED ENDPOINT: Download Invoice (With Payment Check) ---
-@app.get("/orders/{order_id}/invoice")
+@router.get("/orders/{order_id}/invoice")
 async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(get_current_user)):
     """
     Generate and download a PDF invoice for a specific order.
@@ -1413,3 +765,26 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
         # If we manually raised the 400 above, allow it to pass through
         if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+
+
+@router.post("/sync/supplier/{supplier_id}")
+async def sync_supplier_products(
+    supplier_id: str,
+    x_sync_secret: str = Header(None)
+):
+    if x_sync_secret != SYNC_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    supplier_products = fetch_supplier_products()
+
+    synced = 0
+    for p in supplier_products:
+        mapped = map_supplier_product(p, supplier_id)
+        upsert_product(mapped)
+        synced += 1
+
+    return {"status": "ok", "synced": synced}
+
+
