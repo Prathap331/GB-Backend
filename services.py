@@ -49,7 +49,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
         return UserResponse(
             id=user.id,
             email=user.email,
-            created_at=user.created_at
+            created_at=user.created_at,
+            token=token 
         )
 
     except Exception as e:
