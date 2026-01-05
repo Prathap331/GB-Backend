@@ -166,7 +166,7 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
     try:
         # READ as the user (RLS enforced)
         res = (
-            supabase_anon.table("profiles")
+            supabase.table("profiles")
             .select("*")
             .eq("id", str(current_user.id))
             .maybe_single()
@@ -218,6 +218,7 @@ async def update_my_profile(profile: ProfileBase, current_user: UserResponse = D
         update_data = profile.model_dump(exclude_unset=True)
         if not update_data: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
         update_data["updated_at"] = datetime.now().isoformat()
+        supabase_anon.postgrest.auth(current_user.token)
         res = supabase_anon.table("profiles").update(update_data).eq("id", str(current_user.id)).execute()
         if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found or update failed")
         return res.data[0]

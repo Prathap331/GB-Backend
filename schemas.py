@@ -130,7 +130,7 @@ class DeliveryPartner(BaseModel):
 
 # Order Schemas
 class OrderItemCreate(BaseModel):
-    variant_id: int                    
+    variant_id: Optional[int] = None
     quantity: int
 
     # legacy fields kept (ignored later)
@@ -145,7 +145,8 @@ class OrderItem(BaseModel):
     order_id: int
 
     product_id: int
-    variant_id: int
+    variant_id: Optional[int] = None
+
 
     quantity: int
     price_per_unit: float
@@ -235,6 +236,7 @@ class UserResponse(BaseModel):
     id: UUID
     email: EmailStr
     created_at: datetime
+    token: Optional[str] = None
 
 
 
