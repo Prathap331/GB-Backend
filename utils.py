@@ -13,27 +13,28 @@ from services import supabase
 
 
 #  shared function for order preview and orders
-def calculate_order_pricing(order, db_products):
-    total_amount = 0.0
+def calculate_order_pricing(order, validated_items):
+    """
+    Pricing based on variant-validated items (uses computed price/subtotals).
+    """
 
-    # subtotal
-    for item in order.items:
-        product = db_products[item.product_id]
-        total_amount += float(product["price"]) * item.quantity
+    # subtotal -> sum of item subtotals
+    total_amount = sum(i["subtotal"] for i in validated_items)
 
-    # discount (based on quantity)
-    total_items = sum(item.quantity for item in order.items)
+    # discount based on quantity count
+    total_items = sum(i["quantity"] for i in validated_items)
     discount_rate = 0.4 if total_items >= 5 else 0.3 if total_items >= 3 else 0
-    discount_amount = round(total_amount * discount_rate, 2)
 
+    discount_amount = round(total_amount * discount_rate, 2)
     discounted = round(total_amount - discount_amount, 2)
 
-    # GST (5% after discount)
+    # GST 5%
     gst_amount = round(discounted * 0.05, 2)
-    final = round(discounted + gst_amount, 2)
 
-    # shipping (below 499)
+    # shipping rule
+    final = round(discounted + gst_amount, 2)
     shipping = 49.0 if final < 499 else 0.0
+
     grand = round(final + shipping, 2)
 
     # COD
@@ -51,7 +52,7 @@ def calculate_order_pricing(order, db_products):
         "shipping_fee": shipping,
         "cod_fee": cod_fee,
         "total": grand,
-        "discount_rate": discount_rate
+        "discount_rate": discount_rate,
     }
 
 

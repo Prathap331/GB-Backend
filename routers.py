@@ -344,14 +344,45 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
 @router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
 
-    product_ids = [item.product_id for item in order.items]
-    res = supabase.table("products").select(
-        "product_id, price"
-    ).in_("product_id", product_ids).execute()
+    validated_items = []
 
-    db_products = {p["product_id"]: p for p in res.data}
+    for item in order.items:
+        # get variant
+        v = (
+            supabase.table("product_variants")
+            .select("variant_id, product_id, stock_quantity")
+            .eq("variant_id", item.variant_id)
+            .single()
+            .execute()
+        )
 
-    pricing = calculate_order_pricing(order, db_products)
+        variant = v.data
+
+        # get product (for price)
+        p = (
+            supabase.table("products")
+            .select("product_id, price")
+            .eq("product_id", variant["product_id"])
+            .single()
+            .execute()
+        )
+
+        product = p.data
+
+        price = float(product["price"])
+        subtotal = price * item.quantity
+
+        validated_items.append(
+            {
+                "variant_id": item.variant_id,
+                "product_id": variant["product_id"],
+                "quantity": item.quantity,
+                "price_per_unit": price,
+                "subtotal": subtotal,
+            }
+        )
+
+    pricing = calculate_order_pricing(order, validated_items)
 
     return pricing
 
@@ -471,13 +502,23 @@ async def create_order(
                 )
             except Exception:
                 raise HTTPException(404, f"Product {variant['product_id']} not found")
+        
 
             product = p.data
+            
             if not product:
                 raise HTTPException(404, f"Product {variant['product_id']} not found")
 
+            # 👇 SAFE PRICE CHECK
+            price_raw = product.get("price")
 
-            price_per_unit = float(product["price"])
+            if price_raw is None:
+                raise HTTPException(
+                    400,
+                    f"Product {product['product_id']} has no price available"
+                )
+
+            price_per_unit = round(float(price_raw), 2)
             subtotal = price_per_unit * qty
             total_amount += subtotal
 
@@ -495,8 +536,7 @@ async def create_order(
             )
 
         # 🔢 shared pricing
-        product_map = {i["product_id"]: {} for i in validated_items}
-        pricing = calculate_order_pricing(order, product_map)
+        pricing = calculate_order_pricing(order, validated_items)
 
         grand_total = pricing["total"]
         gst_amount = pricing["gst"]
@@ -592,11 +632,20 @@ async def create_order(
             supabase.table("orders").delete().eq("order_id", new_order_id).execute()
             raise HTTPException(500, f"Razorpay creation failed: {e}")
 
+
     # 6️⃣ DEDUCT STOCK PER VARIANT
     for item in validated_items:
-        supabase.table("product_variants").update(
-            {"stock_quantity": item["new_stock"]}
-        ).eq("variant_id", item["variant_id"]).execute()
+        
+        update_res = (
+            supabase
+            .table("product_variants")
+            .update({"stock_quantity": item["new_stock"]})
+            .eq("variant_id", item["variant_id"])
+            .execute()
+        )
+
+        
+        
 
     # 7️⃣ RETURN FINAL ORDER
     full_order = (
