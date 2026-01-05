@@ -130,18 +130,23 @@ class DeliveryPartner(BaseModel):
 
 # Order Schemas
 class OrderItemCreate(BaseModel):
-    product_id: int
+    variant_id: int                    
     quantity: int
-    # NEW: Allow frontend to send this
 
-    size: Optional[str] = None 
-    color: Optional[str] = None # NEW: User selects color
+    # legacy fields kept (ignored later)
+    product_id: Optional[int] = None
+    size: Optional[str] = None
+    color: Optional[str] = None
+
     opt_out_delivery: bool = False
 
 class OrderItem(BaseModel):
     order_item_id: int
     order_id: int
+
     product_id: int
+    variant_id: int
+
     quantity: int
     price_per_unit: float
     subtotal: float
@@ -151,9 +156,7 @@ class OrderItem(BaseModel):
 
 
     size: Optional[str] = None 
-    color: Optional[str] = None # NEW: Saved color
-
-
+    color: Optional[str] = None 
      
     # UPDATED: Nested product info
     products: Optional[ProductSimple] = None 
@@ -265,4 +268,3 @@ class Supplier(BaseModel):
     class Config:
         from_attributes = True
 
-print("[Debug] - Schemas loaded successfully")

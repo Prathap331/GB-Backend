@@ -15,7 +15,8 @@ from services import (
     supabase,
     razorpay_client,
     RAZORPAY_KEY_ID,
-    get_current_user
+    get_current_user,
+    supabase_anon
 )
 from schemas import (
     Product, ProductUpdate, 
@@ -163,8 +164,9 @@ async def reset_password(
 @router.get("/profiles/me", response_model=Profile)
 async def get_my_profile(current_user: UserResponse = Depends(get_current_user)):
     try:
+        # READ as the user (RLS enforced)
         res = (
-            supabase.table("profiles")
+            supabase_anon.table("profiles")
             .select("*")
             .eq("id", str(current_user.id))
             .maybe_single()
@@ -216,7 +218,7 @@ async def update_my_profile(profile: ProfileBase, current_user: UserResponse = D
         update_data = profile.model_dump(exclude_unset=True)
         if not update_data: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
         update_data["updated_at"] = datetime.now().isoformat()
-        res = supabase.table("profiles").update(update_data).eq("id", str(current_user.id)).execute()
+        res = supabase_anon.table("profiles").update(update_data).eq("id", str(current_user.id)).execute()
         if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found or update failed")
         return res.data[0]
     except Exception as e:
@@ -356,21 +358,29 @@ async def price_preview(order: OrderCreate):
 
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
 
+
 @router.post("/orders", response_model=Order)
 async def create_order(
     order: OrderCreate,
     current_user: UserResponse = Depends(get_current_user)
 ):
     """
-    Create a new order. If 'Online', it also creates a Razorpay order.
+    Create a new order using variant_id (size/color).
+    Validates stock from product_variants and stores variant_id in order_items.
     """
-    
-    # 1. Get user's profile to fetch address
-    try:
-        profile_res = (supabase.table("profiles").select("*").eq("id", str(current_user.id)).maybe_single().execute())
-        profile = profile_res.data
 
-        if not profile: 
+    # 1️⃣ Get user profile / address
+    try:
+        profile_res = (
+            supabase.table("profiles")
+            .select("*")
+            .eq("id", str(current_user.id))
+            .maybe_single()
+            .execute()
+        )
+
+        profile = profile_res.data or {}
+        if not profile:
             profile = {
                 "id": str(current_user.id),
                 "full_name": None,
@@ -393,86 +403,114 @@ async def create_order(
             profile.get("full_name"),
             profile.get("address_line1"),
             profile.get("city"),
-            profile.get("postal_code")
+            profile.get("postal_code"),
         ]
-
         if any(f in (None, "", " ") for f in required_fields):
             raise HTTPException(
-                status_code=400,
-                detail="Please complete your profile (name, address, city, postal code) before ordering."
+                400,
+                "Please complete your profile (name, address, city, postal code) before ordering.",
             )
 
-# SAFE ADDRESS FORMAT
         delivery_address = (
             f"{profile.get('full_name','')}\n"
             f"{profile.get('address_line1','')}\n"
             f"{profile.get('address_line2','')}\n"
             f"{profile.get('city','')}, {profile.get('state','')} {profile.get('postal_code','')}\n"
             f"{profile.get('country','')}"
-        )    
+        )
 
     except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error fetching profile: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(500, f"Error fetching profile: {e}")
 
-    # 2 & 3. Validate products & calculate total
-    total_amount = 0.0
-    order_items_to_create = []
+    # 2️⃣ VALIDATE VARIANTS, LOAD PRODUCTS & CALCULATE TOTAL
     try:
-        product_ids = [item.product_id for item in order.items]
-        if not product_ids: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No items in order")
-        res = supabase.table("products").select("product_id, price, stock_quantity, product_name").in_("product_id", product_ids).execute()
-        db_products = {p["product_id"]: p for p in res.data}
-        
+        if not order.items:
+            raise HTTPException(400, "No items in order")
+
+        validated_items = []
+        total_amount = 0.0
+
         for item in order.items:
-            product = db_products.get(item.product_id)
-            if not product: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Product {item.product_id} not found")
-            if product["stock_quantity"] < item.quantity: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Not enough stock for {product['product_name']}")
+            variant_id = item.variant_id
+            qty = item.quantity
+
+            # 🔍 get variant (this contains stock + product_id)
+            try:
+                v = (
+                    supabase.table("product_variants")
+                    .select("variant_id, product_id, color, size, stock_quantity")
+                    .eq("variant_id", variant_id)
+                    .single()
+                    .execute()
+                )
+            except Exception:
+                raise HTTPException(404, f"Variant {variant_id} not found")
+
+            if not v.data:
+                raise HTTPException(404, f"Variant {variant_id} not found")
+
+            variant = v.data
+
+            if variant["stock_quantity"] < qty:
+                raise HTTPException(
+                    400,
+                    f"Not enough stock for {variant['color']} / {variant['size']}",
+                )
+
+            # 💰 fetch price from product table
+            try:
+                p = (
+                    supabase.table("products")
+                    .select("product_id, price, supplier_id, supplier_product_id")
+                    .eq("product_id", variant["product_id"])
+                    .single()
+                    .execute()
+                )
+            except Exception:
+                raise HTTPException(404, f"Product {variant['product_id']} not found")
+
+            product = p.data
+            if not product:
+                raise HTTPException(404, f"Product {variant['product_id']} not found")
+
+
             price_per_unit = float(product["price"])
-            subtotal = price_per_unit * item.quantity
+            subtotal = price_per_unit * qty
             total_amount += subtotal
-            order_items_to_create.append({
-                            "product_id": item.product_id,
-                            "quantity": item.quantity,
-                            "price_per_unit": price_per_unit,
-                            "subtotal": subtotal,
 
-                            # NEW — store supplier info
-                            "supplier_id": product["supplier_id"],
-                            "supplier_product_id": product["supplier_product_id"],
+            validated_items.append(
+                {
+                    "variant_id": variant_id,
+                    "product_id": variant["product_id"],
+                    "quantity": qty,
+                    "price_per_unit": price_per_unit,
+                    "subtotal": subtotal,
+                    "new_stock": variant["stock_quantity"] - qty,
+                    "supplier_id": product["supplier_id"],
+                    "supplier_product_id": product["supplier_product_id"],
+                }
+            )
 
-                            "size": item.size,
-                            "color": item.color
-                        })
+        # 🔢 shared pricing
+        product_map = {i["product_id"]: {} for i in validated_items}
+        pricing = calculate_order_pricing(order, product_map)
 
-        # ---- USE SHARED PRICING FUNCTION ----
-        pricing = calculate_order_pricing(order, db_products)
-
-        grand_total   = pricing["total"]
-        gst_amount    = pricing["gst"]
-        shipping_fee  = pricing["shipping_fee"]
-        cod_fee       = pricing["cod_fee"]
-        discount_rate = pricing["discount_rate"]
-
-        print("[PRICE PREVIEW]", pricing)
-
+        grand_total = pricing["total"]
+        gst_amount = pricing["gst"]
+        shipping_fee = pricing["shipping_fee"]
+        cod_fee = pricing["cod_fee"]
 
     except Exception as e:
-        if isinstance(e, HTTPException): raise e
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error validating products: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(500, f"Error validating items: {e}")
 
-    # 4. Create the 'orders' entry in our DB
-    razorpay_order_id = None
-    # --- GENERATE HASH HERE ---
+    # 3️⃣ CREATE ORDER
     contest_id = uuid.uuid4().hex
+    lucky_numbers = generate_unique_lucky_numbers(int(total_amount // 1000))
 
-    # NEW: Generate Random 7-digit Lucky Number
-    # lucky_number = f"{random.randint(0, 9999999):07d}"
-    lucky_count = int(total_amount // 1000)
-    lucky_numbers = generate_unique_lucky_numbers(lucky_count)
-
-
-    
     try:
         order_data = {
             "user_id": str(current_user.id),
@@ -481,96 +519,99 @@ async def create_order(
             "delivery_address": delivery_address,
             "payment_status": "Pending",
             "order_status": "Pending",
-            "contest_id": contest_id ,# Save to DB
-            "lucky_number": lucky_numbers, # NEW: Save to DB
-            # NEW: Save the opt-out preference
-            "opt_out_delivery": order.opt_out_delivery 
+            "contest_id": contest_id,
+            "lucky_number": lucky_numbers,
+            "opt_out_delivery": order.opt_out_delivery,
         }
+
         order_res = supabase.table("orders").insert(order_data).execute()
-        if not order_res.data: raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to create order record")
         new_order = order_res.data[0]
         new_order_id = new_order["order_id"]
-        # Save each lucky number to lucky_numbers table
+
         for ln in lucky_numbers:
-            supabase.table("lucky_numbers").insert({
-                "order_id": new_order_id,
-                "user_id": str(current_user.id),
-                "lucky_number": ln
-            }).execute()
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error creating order in DB: {e}")
-
-    # 5. Create 'order_items'
-    try:
-        for item in order_items_to_create:
-            item["order_id"] = new_order_id
-        items_res = supabase.table("order_items").insert(order_items_to_create).execute()
-        new_items = items_res.data
-    except Exception as e:
-        supabase.table("orders").delete().eq("order_id", new_order_id).execute()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error creating order items: {e}")
-
-    # --- 6. RAZORPAY LOGIC ---
-    if order.payment_method == "Online":
-        try:
-            # Amount is in paisa (100 paisa = 1 Rupee)
-            rzp_order_data = {
-                "amount": int(round(order_data["total_amount"] * 100)),
-                "currency": "INR",
-                "receipt": f"order_rcptid_{new_order_id}",
-                "notes": {
-                    "internal_order_id": new_order_id,
+            supabase.table("lucky_numbers").insert(
+                {
+                    "order_id": new_order_id,
                     "user_id": str(current_user.id),
-                    "contest_id": contest_id, # Save to DB
-                    "lucky_number": lucky_numbers, # NEW: Save to DB
-                    "opt_out_delivery": str(order.opt_out_delivery)
+                    "lucky_number": ln,
                 }
-            }
-            print(
-                "[RZP DEBUG]",
-                f"backend_total={order_data['total_amount']}",
-                f"rzp_amount_paise={rzp_order_data['amount']}"
+            ).execute()
+
+    except Exception as e:
+        raise HTTPException(500, f"Error creating order in DB: {e}")
+
+    # 4️⃣ CREATE ORDER ITEMS (store VARIANT_ID!)
+    try:
+        payload = []
+        for item in validated_items:
+            payload.append(
+                {
+                    "order_id": new_order_id,
+                    "product_id": item["product_id"],
+                    "variant_id": item["variant_id"],   # 👈 IMPORTANT
+                    "quantity": item["quantity"],
+                    "price_per_unit": item["price_per_unit"],
+                    "subtotal": item["subtotal"],
+                    "supplier_id": item["supplier_id"],
+                    "supplier_product_id": item["supplier_product_id"],
+                }
             )
 
-            rzp_order = razorpay_client.order.create(data=rzp_order_data)
+        supabase.table("order_items").insert(payload).execute()
+
+    except Exception as e:
+        supabase.table("orders").delete().eq("order_id", new_order_id).execute()
+        raise HTTPException(500, f"Error creating order items: {e}")
+
+    # 5️⃣ RAZORPAY LOGIC (unchanged)
+    razorpay_order_id = None
+    if order.payment_method == "Online":
+        try:
+            rzp_order = razorpay_client.order.create(
+                data={
+                    "amount": int(round(order_data["total_amount"] * 100)),
+                    "currency": "INR",
+                    "receipt": f"order_rcptid_{new_order_id}",
+                    "notes": {
+                        "internal_order_id": new_order_id,
+                        "user_id": str(current_user.id),
+                        "contest_id": contest_id,
+                        "lucky_number": lucky_numbers,
+                        "opt_out_delivery": str(order.opt_out_delivery),
+                    },
+                }
+            )
+
             razorpay_order_id = rzp_order["id"]
-            
-            # Save razorpay_order_id to DB
-            supabase.table("orders").update({"razorpay_order_id": razorpay_order_id}).eq("order_id", new_order_id).execute()
-            
-            # Update local object for response
-            new_order["razorpay_order_id"] = razorpay_order_id
+            supabase.table("orders").update(
+                {"razorpay_order_id": razorpay_order_id}
+            ).eq("order_id", new_order_id).execute()
 
         except Exception as e:
-            # Cleanup if Razorpay fails
             supabase.table("orders").delete().eq("order_id", new_order_id).execute()
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Razorpay creation failed: {e}")
+            raise HTTPException(500, f"Razorpay creation failed: {e}")
 
+    # 6️⃣ DEDUCT STOCK PER VARIANT
+    for item in validated_items:
+        supabase.table("product_variants").update(
+            {"stock_quantity": item["new_stock"]}
+        ).eq("variant_id", item["variant_id"]).execute()
 
+    # 7️⃣ RETURN FINAL ORDER
+    full_order = (
+        supabase.table("orders")
+        .select("*, order_items(*, products(product_name, category, image_url))")
+        .eq("order_id", new_order_id)
+        .single()
+        .execute()
+    )
 
+    final_order = Order.model_validate(full_order.data)
 
-    '''
-    # 7. Return response
-    final_order = Order.model_validate(new_order)
-    final_order.items = [OrderItem.model_validate(item) for item in new_items]
-    
     if razorpay_order_id:
         final_order.razorpay_order_id = razorpay_order_id
-        final_order.razorpay_key_id = RAZORPAY_KEY_ID # Send public key
+        final_order.razorpay_key_id = RAZORPAY_KEY_ID
 
-    return final_order'''
-    # FIX: Fetch the order AGAIN to include nested product details for the response
-    # This step was previously returning raw dict, skipping model validation and Razorpay key injection.
-    full_order_res = supabase.table("orders").select("*, order_items(*, products(product_name, category, image_url))").eq("order_id", new_order_id).single().execute()
-    
-    # 1. Convert the DB dictionary to your Pydantic Model
-    final_order = Order.model_validate(full_order_res.data)
-    
-    # 2. Inject Razorpay keys if they exist (since they are env vars, not in DB)
-    if razorpay_order_id:
-        final_order.razorpay_order_id = razorpay_order_id
-        final_order.razorpay_key_id = RAZORPAY_KEY_ID 
-    
     final_order.shipping_fee = shipping_fee
     final_order.gst_amount = gst_amount
     final_order.cod_fee = cod_fee
@@ -786,5 +827,82 @@ async def sync_supplier_products(
         synced += 1
 
     return {"status": "ok", "synced": synced}
+
+
+
+
+@router.get("/products/{product_id}/variants")
+def get_product_variants(product_id: int):
+
+    try:
+        result = (
+            supabase
+            .table("product_variants")
+            .select("variant_id, product_id, color, size, stock_quantity")
+            .eq("product_id", product_id)
+            .execute()
+        )
+
+        # result.data will always exist — may just be []
+        return result.data
+
+    except Exception as e:
+        raise HTTPException(500, f"Failed to fetch variants: {e}")
+
+
+
+# list all variants for debugging
+@router.get("/variants")
+def list_variants(product_id: int | None = None):
+    """
+    List all variants, or only variants for a specific product_id.
+    """
+
+    try:
+        query = (
+            supabase
+            .table("product_variants")
+            .select("variant_id, product_id, color, size, stock_quantity")
+        )
+
+        if product_id is not None:
+            query = query.eq("product_id", product_id)
+
+        result = (
+            query
+            .order("product_id")
+            .order("color")
+            .order("size")
+            .execute()
+        )
+
+        return result.data   # Safe — may be [] but won't crash
+
+    except Exception as e:
+        raise HTTPException(500, f"Failed to fetch variants: {e}")
+
+
+
+#  to fetch one specific size+color
+@router.get("/variants/{variant_id}")
+def get_variant(variant_id: int):
+
+    try:
+        result = (
+            supabase
+            .table("product_variants")
+            .select("variant_id, product_id, color, size, stock_quantity")
+            .eq("variant_id", variant_id)
+            .single()
+            .execute()
+        )
+
+        if not result.data:
+            raise HTTPException(404, "Variant not found")
+
+        return result.data
+
+    except Exception as e:
+        raise HTTPException(500, f"Failed to fetch variant: {e}")
 
 
