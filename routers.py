@@ -343,10 +343,18 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
 
 @router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
+    print("➡️ Incoming price preview request:", order.model_dump())
 
     validated_items = []
 
     for item in order.items:
+
+        print("🔎 Processing item:", item.model_dump())
+
+        if not item.variant_id:
+            print("❌ Missing variant_id in item:", item.model_dump())
+            continue
+
         # get variant
         v = (
             supabase.table("product_variants")
@@ -566,7 +574,7 @@ async def create_order(
         }
 
         order_res = supabase.table("orders").insert(order_data).execute()
-        print("[ORDER CREATED RESPONSE]", order_res.data)
+        # print("[ORDER CREATED RESPONSE]", order_res.data)
 
         if not order_res.data:
             raise HTTPException(500, "Order insert returned no data")
@@ -605,7 +613,7 @@ async def create_order(
             )
 
         supabase.table("order_items").insert(payload).execute()
-        print("[ORDER ITEMS INSERTED]", payload)
+        # print("[ORDER ITEMS INSERTED]", payload)
 
 
     except Exception as e:
@@ -632,14 +640,14 @@ async def create_order(
             )
 
             razorpay_order_id = rzp_order["id"]
-            print("[RAZORPAY ORDER CREATED]", razorpay_order_id)
+            # print("[RAZORPAY ORDER CREATED]", razorpay_order_id)
 
             supabase.table("orders").update(
                 {"razorpay_order_id": razorpay_order_id}
             ).eq("order_id", new_order_id).execute()
 
         except Exception as e:
-            print("[RAZORPAY ERROR]", str(e))
+            # print("[RAZORPAY ERROR]", str(e))
             supabase.table("orders").delete().eq("order_id", new_order_id).execute()
             raise HTTPException(500, f"Razorpay creation failed: {e}")
 
@@ -655,8 +663,9 @@ async def create_order(
             .execute()
         )
 
-        
-        
+        # print("[STOCK AFTER UPDATE]", update_res.data)
+
+
 
     # 7️⃣ RETURN FINAL ORDER
     full_order = (

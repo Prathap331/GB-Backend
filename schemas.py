@@ -166,11 +166,11 @@ class OrderItem(BaseModel):
 class OrderCreate(BaseModel):
     items: List[OrderItemCreate]
     payment_method: str # 'COD', 'Online', 'Wallet'
-    opt_out_delivery: bool = False
+    opt_out_delivery: Optional[bool] = False
 
 # Add this near your other schemas (like OrderCreate)
 class OrderUpdate(BaseModel):
-    opt_out_delivery: bool
+    opt_out_delivery: Optional[bool] = False
 
 # UPDATED: Order Response with Razorpay fields
 class Order(BaseModel):
