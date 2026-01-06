@@ -23,7 +23,7 @@ from schemas import (
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
-    PaymentVerificationRequest,
+    PaymentVerificationRequest, Supplier,
     UserCreate, UserForgotPassword, UserResetPassword, UserResponse,
     Token,
 )
@@ -566,6 +566,12 @@ async def create_order(
         }
 
         order_res = supabase.table("orders").insert(order_data).execute()
+        print("[ORDER CREATED RESPONSE]", order_res.data)
+
+        if not order_res.data:
+            raise HTTPException(500, "Order insert returned no data")
+
+
         new_order = order_res.data[0]
         new_order_id = new_order["order_id"]
 
@@ -599,6 +605,8 @@ async def create_order(
             )
 
         supabase.table("order_items").insert(payload).execute()
+        print("[ORDER ITEMS INSERTED]", payload)
+
 
     except Exception as e:
         supabase.table("orders").delete().eq("order_id", new_order_id).execute()
@@ -624,11 +632,14 @@ async def create_order(
             )
 
             razorpay_order_id = rzp_order["id"]
+            print("[RAZORPAY ORDER CREATED]", razorpay_order_id)
+
             supabase.table("orders").update(
                 {"razorpay_order_id": razorpay_order_id}
             ).eq("order_id", new_order_id).execute()
 
         except Exception as e:
+            print("[RAZORPAY ERROR]", str(e))
             supabase.table("orders").delete().eq("order_id", new_order_id).execute()
             raise HTTPException(500, f"Razorpay creation failed: {e}")
 
@@ -956,3 +967,11 @@ def get_variant(variant_id: int):
         raise HTTPException(500, f"Failed to fetch variant: {e}")
 
 
+
+@router.get("/suppliers", response_model=List[Supplier])
+async def get_suppliers():
+    try:
+        res = supabase.table("suppliers").select("*").execute()
+        return res.data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

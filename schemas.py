@@ -249,23 +249,36 @@ class Token(BaseModel):
 
 
 
-# supplier schema
+from pydantic import BaseModel
+from typing import Optional, List
+from datetime import datetime
+
+
 class Supplier(BaseModel):
     supplier_id: str
-    key_person_name: Optional[str] = None
-    brand_names: Optional[List[str]] = None
-    brand_tags: Optional[List[str]] = None          
-    brand_store_images: Optional[List[str]] = None
-    brand_logo_url: Optional[str] = None
+    key_person_name: str
+    brand_names: List[str]
+
     phone_number: Optional[str] = None
     email: Optional[str] = None
     gstin: Optional[str] = None
     address: Optional[str] = None
     website: Optional[str] = None
     location_link: Optional[str] = None
+
     api_base_url: Optional[str] = None
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
+
+    is_active: Optional[bool] = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    brand_tags: Optional[List[str]] = None
+    brand_store_images: Optional[List[str]] = None
+    brand_logo: Optional[str] = None
+    video_url: Optional[str] = None
+    brand_intro: Optional[str] = None  
 
     class Config:
         from_attributes = True
