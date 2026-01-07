@@ -348,24 +348,27 @@ async def price_preview(order: OrderCreate):
 
         # ---------- 🔎 Resolve variant (fallback) ----------
         # If the UI didn't send variant_id, try to find it from product + size + color
-        if not item.variant_id:
+        if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
+            print("Fallback resolving variant for:", item.model_dump())   
+
             v = (
                 supabase.table("product_variants")
                 .select("variant_id, product_id, stock_quantity")
                 .eq("product_id", item.product_id)
                 .eq("size", item.size)
                 .eq("color", item.color)
-                .single()
+                .maybe_single()
                 .execute()
             )
 
             if not v.data:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Variant not found for product {item.product_id} ({item.size}/{item.color})"
+                    detail=f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
                 )
 
             item.variant_id = v.data["variant_id"]
+
 
         # ---------- 📦 Now safely fetch variant ----------
         v = (

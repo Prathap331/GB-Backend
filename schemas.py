@@ -4,7 +4,7 @@
 
 from pydantic import BaseModel, EmailStr, Field
 from uuid import UUID
-from typing import Optional,List, Dict
+from typing import Any, Optional,List, Dict
 from datetime import datetime, date
 
 
@@ -275,10 +275,14 @@ class Supplier(BaseModel):
     updated_at: Optional[datetime] = None
 
     brand_tags: Optional[List[str]] = None
-    brand_store_images: Optional[List[str]] = None
+    brand_store_images: Optional[Dict[str, Any]] = {"slider": [], "offer": None}
     brand_logo: Optional[str] = None
-    video_url: Optional[str] = None
+    video_urls: Optional[Dict[str, Optional[str]]] = {
+    "brand_story": None,
+    "product_detail": None
+    }
     brand_intro: Optional[str] = None  
+    brand_highlights: Optional[List[Dict[str, Any]]] = []
 
     class Config:
         from_attributes = True
