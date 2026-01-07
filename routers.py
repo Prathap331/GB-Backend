@@ -346,14 +346,25 @@ async def price_preview(order: OrderCreate):
 
     for item in order.items:
 
-        # ---------- 🔎 Resolve variant (fallback) ----------
-        # If the UI didn't send variant_id, try to find it from product + size + color
-        if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
-            print("Fallback resolving variant for:", item.model_dump())   
+        # 🛡 1️⃣ Ensure variant_id really belongs to this product
+        if item.variant_id:
+            check = (
+                supabase.table("product_variants")
+                .select("variant_id, product_id")
+                .eq("variant_id", item.variant_id)
+                .maybe_single()
+                .execute()
+            )
 
+            if not check.data or check.data["product_id"] != item.product_id:
+                # stale / wrong variant → force fallback
+                item.variant_id = None
+
+        # 🔁 2️⃣ Resolve variant using product + size + color if missing/reset
+        if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
             v = (
                 supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity")
+                .select("variant_id, product_id, stock_quantity, price, mrp")
                 .eq("product_id", item.product_id)
                 .eq("size", item.size)
                 .eq("color", item.color)
@@ -363,47 +374,48 @@ async def price_preview(order: OrderCreate):
 
             if not v.data:
                 raise HTTPException(
-                    status_code=400,
-                    detail=f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
+                    400,
+                    f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
                 )
 
-            item.variant_id = v.data["variant_id"]
+            variant = v.data
+            item.variant_id = variant["variant_id"]
 
+        else:
+            # already valid variant_id → fetch full record
+            v = (
+                supabase.table("product_variants")
+                .select("variant_id, product_id, stock_quantity, price, mrp")
+                .eq("variant_id", item.variant_id)
+                .single()
+                .execute()
+            )
 
-        v = (
-            supabase.table("product_variants")
-            .select("variant_id, product_id, stock_quantity, price, mrp")
-            .eq("variant_id", item.variant_id)
-            .single()
-            .execute()
-        )
+            variant = v.data
 
-        variant = v.data
-
-        # prefer variant price 
+        # 💰 prefer variant price
         if variant["price"] is None:
             raise HTTPException(
-                status_code=400,
-                detail=f"Variant {item.variant_id} has no price set"
+                400,
+                f"Variant {item.variant_id} has no price set"
             )
 
         price = round(float(variant["price"]), 2)
 
         if price <= 0:
             raise HTTPException(
-                status_code=400,
-                detail=f"Variant {item.variant_id} has invalid price {price}"
+                400,
+                f"Variant {item.variant_id} has invalid price {price}"
             )
 
-        # ---------- Validate stock ----------
+        # 📦 stock validation
         if variant["stock_quantity"] < item.quantity:
             raise HTTPException(
-                status_code=400,
-                detail=f"Not enough stock for variant {item.variant_id}"
+                400,
+                f"Not enough stock for variant {item.variant_id}"
             )
-            
-        subtotal = price * item.quantity
 
+        subtotal = price * item.quantity
 
         validated_items.append(
             {
@@ -503,28 +515,62 @@ async def create_order(
             variant_id = item.variant_id
             qty = item.quantity
 
-            # 🔍 get variant (includes price now)
-            v = (
-                supabase.table("product_variants")
-                .select("variant_id, product_id, color, size, stock_quantity, price, mrp")
-                .eq("variant_id", variant_id)
-                .single()
-                .execute()
-            )
+            # 🛡 1️⃣ ensure variant belongs to product
+            if variant_id:
+                check = (
+                    supabase.table("product_variants")
+                    .select("variant_id, product_id")
+                    .eq("variant_id", variant_id)
+                    .maybe_single()
+                    .execute()
+                )
 
-            if not v.data:
-                raise HTTPException(404, f"Variant {variant_id} not found")
+                if not check.data or check.data["product_id"] != item.product_id:
+                    variant_id = None   # force fallback
 
-            variant = v.data
 
-            # ❗ stock check
+            # 🔁 2️⃣ fallback: find variant from product + size + color
+            if not variant_id or str(variant_id).lower() in ["", "none", "null"]:
+                v = (
+                    supabase.table("product_variants")
+                    .select("variant_id, product_id, color, size, stock_quantity, price, mrp")
+                    .eq("product_id", item.product_id)
+                    .eq("size", item.size)
+                    .eq("color", item.color)
+                    .maybe_single()
+                    .execute()
+                )
+
+                if not v.data:
+                    raise HTTPException(
+                        400,
+                        f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
+                    )
+
+                variant = v.data
+                variant_id = variant["variant_id"]
+
+            else:
+                # already valid → fetch full row
+                v = (
+                    supabase.table("product_variants")
+                    .select("variant_id, product_id, color, size, stock_quantity, price, mrp")
+                    .eq("variant_id", variant_id)
+                    .single()
+                    .execute()
+                )
+
+                variant = v.data
+
+
+            # 📦 stock validation
             if variant["stock_quantity"] < qty:
                 raise HTTPException(
                     400,
-                    f"Not enough stock for {variant['color']} / {variant['size']}",
+                    f"Not enough stock for {variant['color']} / {variant['size']}"
                 )
 
-            # 🎯 supplier info only
+            # 🎯 supplier details
             p = (
                 supabase.table("products")
                 .select("product_id, supplier_id, supplier_product_id")
@@ -535,7 +581,7 @@ async def create_order(
 
             product = p.data
 
-            # 💰 VARIANT PRICE
+            # 💰 variant price (canonical)
             price_raw = variant.get("price")
 
             if price_raw is None:
@@ -567,6 +613,7 @@ async def create_order(
                     "supplier_product_id": product["supplier_product_id"],
                 }
             )
+
 
         # 🔢 shared pricing (AFTER full loop)
         pricing = calculate_order_pricing(order, validated_items)
@@ -683,7 +730,6 @@ async def create_order(
 
     # 6️⃣ DEDUCT STOCK PER VARIANT
     for item in validated_items:
-        
         update_res = (
             supabase
             .table("product_variants")
@@ -692,7 +738,7 @@ async def create_order(
             .execute()
         )
 
-        # print("[STOCK AFTER UPDATE]", update_res.data)
+        print("[STOCK AFTER UPDATE]", update_res.data)
 
     # 7️⃣ RETURN FINAL ORDER
     full_order = (
