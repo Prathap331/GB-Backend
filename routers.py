@@ -372,7 +372,7 @@ async def price_preview(order: OrderCreate):
                 .execute()
             )
 
-            if not v.data:
+            if not v or not v.data:
                 raise HTTPException(
                     400,
                     f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
@@ -541,7 +541,7 @@ async def create_order(
                     .execute()
                 )
 
-                if not v.data:
+                if not v or not v.data:
                     raise HTTPException(
                         400,
                         f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
