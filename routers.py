@@ -339,23 +339,35 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
 
 
 
-
-
 @router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
-    print("➡️ Incoming price preview request:", order.model_dump())
 
     validated_items = []
 
     for item in order.items:
 
-        print("🔎 Processing item:", item.model_dump())
-
+        # ---------- 🔎 Resolve variant (fallback) ----------
+        # If the UI didn't send variant_id, try to find it from product + size + color
         if not item.variant_id:
-            print("❌ Missing variant_id in item:", item.model_dump())
-            continue
+            v = (
+                supabase.table("product_variants")
+                .select("variant_id, product_id, stock_quantity")
+                .eq("product_id", item.product_id)
+                .eq("size", item.size)
+                .eq("color", item.color)
+                .single()
+                .execute()
+            )
 
-        # get variant
+            if not v.data:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Variant not found for product {item.product_id} ({item.size}/{item.color})"
+                )
+
+            item.variant_id = v.data["variant_id"]
+
+        # ---------- 📦 Now safely fetch variant ----------
         v = (
             supabase.table("product_variants")
             .select("variant_id, product_id, stock_quantity")
@@ -366,7 +378,7 @@ async def price_preview(order: OrderCreate):
 
         variant = v.data
 
-        # get product (for price)
+        # ---------- 💰 Fetch product price ----------
         p = (
             supabase.table("products")
             .select("product_id, price")
@@ -377,7 +389,7 @@ async def price_preview(order: OrderCreate):
 
         product = p.data
 
-        price = float(product["price"])
+        price = round(float(product["price"]), 2)
         subtotal = price * item.quantity
 
         validated_items.append(
@@ -390,6 +402,7 @@ async def price_preview(order: OrderCreate):
             }
         )
 
+    # ---------- 🧮 Calculate totals ----------
     pricing = calculate_order_pricing(order, validated_items)
 
     return pricing
