@@ -77,3 +77,4 @@ def fetch_supplier_products():
     res.raise_for_status()
 
     return res.json()
+

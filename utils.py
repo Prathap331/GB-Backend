@@ -238,7 +238,7 @@ def generate_unique_lucky_numbers(count: int):
 
 
 
-# Convert supplier product JSON → our product format
+# Convert custom supplier product JSON → our product format
 def map_supplier_product(p: dict, supplier_id: str):
     return {
         "supplier_id": supplier_id,
@@ -255,11 +255,59 @@ def map_supplier_product(p: dict, supplier_id: str):
         "is_active": True,
     }
 
+
+
+# shopify supplier product mapping
+def map_shopify_product(p: dict, supplier_id: str):
+    variant = p["variants"][0] if p.get("variants") else {}
+
+    # Primary image
+    image_url = None
+    if p.get("image") and p["image"].get("src"):
+        image_url = p["image"]["src"]
+
+    # All images as list of URLs
+    images = [
+        img["src"]
+        for img in p.get("images", [])
+        if img.get("src")
+    ]
+
+
+    return {
+        "supplier_id": supplier_id,
+        "supplier_product_id": str(p["id"]),
+
+        "product_name": p.get("title"),
+        "description": p.get("body_html") or "",
+
+        "price": float(variant.get("price", 0)),
+        "mrp": float(variant.get("compare_at_price") or variant.get("price", 0)),
+        "image_url": image_url,  
+        "images": images, 
+
+        "is_active": True,
+    }
+
+
+
+def map_shopify_variant(v: dict, product_id: int):
+    return {
+        "product_id": product_id,
+        "supplier_variant_id": str(v["id"]),
+        "color": v.get("option1"),
+        "size": v.get("option2"),
+        "stock_quantity": v.get("inventory_quantity", 0),
+        "is_active": True,
+    }
+
+
+
 # insert or update product based on supplier_product_id
 def upsert_product(data: dict):
 
     # never send product_id (DB will manage it)
-    data.pop("product_id", None)
+    data = {k: v for k, v in data.items() if k != "product_id"}
 
     res = (
         supabase.table("products")
@@ -268,4 +316,10 @@ def upsert_product(data: dict):
     )
 
     return res
+
+def upsert_variant(data: dict):
+    supabase.table("product_variants").upsert(
+        data,
+        on_conflict="supplier_variant_id"
+    ).execute()
 
