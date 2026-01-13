@@ -52,6 +52,10 @@ def calculate_order_pricing(order, validated_items):
             .eq("offer_scope.scope_id", brand_id)
             .eq("is_active", True)
             .lte("min_quantity", data["quantity"])
+            .eq("is_active", True)
+            .lte("min_quantity", data["quantity"])
+            .lte("start_date", "now()")
+            .gte("end_date", "now()")
             .execute()
         )
 
