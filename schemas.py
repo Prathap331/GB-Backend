@@ -251,8 +251,8 @@ class Token(BaseModel):
 
 class Supplier(BaseModel):
     supplier_id: str
-    key_person_name: str
-    brand_names: List[str]
+    key_person_name: Optional[str] = None
+    brand_names: Optional[List[str]] = None
 
     phone_number: Optional[str] = None
     email: Optional[str] = None
