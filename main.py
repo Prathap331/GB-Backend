@@ -3,8 +3,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from routers import router as api_router
+from shopify_routers import router as shopify_router
 
-app = FastAPI(title="E-Commerce Backend v3 (Razorpay)")
+app = FastAPI(title="QDIO E-Commerce")
 
 # --- CORS Middleware ---
 app.add_middleware(
@@ -20,3 +21,4 @@ app.add_middleware(
 
 app.include_router(api_router)
 
+app.include_router(shopify_router)
