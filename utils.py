@@ -11,50 +11,94 @@ from services import supabase
 
 
 
-
-#  shared function for order preview and orders
 def calculate_order_pricing(order, validated_items):
     """
-    Pricing based on variant-validated items (uses computed price/subtotals).
+    Brand-wise pricing with DB-driven tier offers.
+    Used by both price-preview and order creation.
     """
 
-    # subtotal -> sum of item subtotals
-    total_amount = sum(i["subtotal"] for i in validated_items)
+    # 1️⃣ group items by brand
+    brand_map = {}
 
-    # discount based on quantity count
-    total_items = sum(i["quantity"] for i in validated_items)
-    discount_rate = 0.4 if total_items >= 5 else 0.3 if total_items >= 3 else 0
+    for item in validated_items:
+        brand_id = item["brand_id"]
 
-    discount_amount = round(total_amount * discount_rate, 2)
-    discounted = round(total_amount - discount_amount, 2)
+        if brand_id not in brand_map:
+            brand_map[brand_id] = {
+                "subtotal": 0.0,
+                "quantity": 0,
+                "discount": 0.0,
+                "offer": None,
+            }
 
-    # GST 5%
+        brand_map[brand_id]["subtotal"] += item["subtotal"]
+        brand_map[brand_id]["quantity"] += item["quantity"]
+
+    total_discount = 0.0
+
+    # 2️⃣ apply best offer per brand
+    for brand_id, data in brand_map.items():
+        offer_res = (
+            supabase
+            .table("offers")
+            .select("""
+                offer_id,
+                discount_type,
+                discount_value,
+                min_quantity,
+                offer_scope!inner(scope_type, scope_id)
+            """)
+            .eq("offer_scope.scope_type", "brand")
+            .eq("offer_scope.scope_id", brand_id)
+            .eq("is_active", True)
+            .lte("min_quantity", data["quantity"])
+            .execute()
+        )
+
+        if not offer_res.data:
+            continue
+
+        # pick best tier (highest discount)
+        best_offer = max(
+            offer_res.data,
+            key=lambda o: o["discount_value"]
+        )
+
+        if best_offer["discount_type"] == "percentage":
+            discount = round(
+                data["subtotal"] * (best_offer["discount_value"] / 100), 2
+            )
+        else:
+            discount = round(best_offer["discount_value"], 2)
+
+        data["discount"] = discount
+        data["offer"] = best_offer
+        total_discount += discount
+
+    # 3️⃣ final totals
+    subtotal = round(sum(i["subtotal"] for i in validated_items), 2)
+    discounted = round(subtotal - total_discount, 2)
+
     gst_amount = round(discounted * 0.05, 2)
-
-    # shipping rule
     final = round(discounted + gst_amount, 2)
-    shipping = 49.0 if final < 499 else 0.0
 
+    shipping = 49.0 if final < 499 else 0.0
     grand = round(final + shipping, 2)
 
-    # COD
     cod_fee = 0.0
     if order.payment_method == "COD":
-        cod_fee = round(grand * 0.02, 2)
-        if cod_fee < 40:
-            cod_fee = 40.0
+        cod_fee = max(40.0, round(grand * 0.02, 2))
         grand = round(grand + cod_fee, 2)
 
     return {
-        "subtotal": round(total_amount, 2),
-        "discount": discount_amount,
+        "subtotal": subtotal,
+        "discount": round(total_discount, 2),
         "gst": gst_amount,
         "shipping_fee": shipping,
         "cod_fee": cod_fee,
         "total": grand,
-        "discount_rate": discount_rate,
+        "brand_breakdown": brand_map,
     }
-
 
 
 def generate_pdf_invoice(order_data, user_data, items_data):

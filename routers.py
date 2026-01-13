@@ -319,13 +319,6 @@ async def update_product(
 
 
 
-
-
-
-
-
-
-
 # --- Delivery Partner Endpoints ---
 
 @router.get("/delivery-partners", response_model=List[DeliveryPartner])
@@ -357,14 +350,13 @@ async def price_preview(order: OrderCreate):
             )
 
             if not check.data or check.data["product_id"] != item.product_id:
-                # stale / wrong variant → force fallback
-                item.variant_id = None
+                item.variant_id = None  # force fallback
 
-        # 🔁 2️⃣ Resolve variant using product + size + color if missing/reset
+        # 🔁 2️⃣ Resolve variant using product + size + color
         if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
             v = (
                 supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity, price, mrp")
+                .select("variant_id, product_id, stock_quantity")
                 .eq("product_id", item.product_id)
                 .eq("size", item.size)
                 .eq("color", item.color)
@@ -382,31 +374,14 @@ async def price_preview(order: OrderCreate):
             item.variant_id = variant["variant_id"]
 
         else:
-            # already valid variant_id → fetch full record
             v = (
                 supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity, price, mrp")
+                .select("variant_id, product_id, stock_quantity")
                 .eq("variant_id", item.variant_id)
                 .single()
                 .execute()
             )
-
             variant = v.data
-
-        # 💰 prefer variant price
-        if variant["price"] is None:
-            raise HTTPException(
-                400,
-                f"Variant {item.variant_id} has no price set"
-            )
-
-        price = round(float(variant["price"]), 2)
-
-        if price <= 0:
-            raise HTTPException(
-                400,
-                f"Variant {item.variant_id} has invalid price {price}"
-            )
 
         # 📦 stock validation
         if variant["stock_quantity"] < item.quantity:
@@ -415,12 +390,46 @@ async def price_preview(order: OrderCreate):
                 f"Not enough stock for variant {item.variant_id}"
             )
 
+        # 🔎 3️⃣ Fetch product (brand + price)
+        p = (
+            supabase.table("products")
+            .select("product_id, brand_id, price")
+            .eq("product_id", variant["product_id"])
+            .single()
+            .execute()
+        )
+
+        product = p.data
+
+        # ❗ ensure product has brand (required for offers)
+        if not product.get("brand_id"):
+            raise HTTPException(
+                400,
+                f"Product {variant['product_id']} has no brand assigned"
+            )
+
+        # 💰 use product price (canonical)
+        if product.get("price") is None:
+            raise HTTPException(
+                400,
+                f"Product {variant['product_id']} has no price set"
+            )
+
+        price = round(float(product["price"]), 2)
+
+        if price <= 0:
+            raise HTTPException(
+                400,
+                f"Product {variant['product_id']} has invalid price {price}"
+            )
+
         subtotal = price * item.quantity
 
         validated_items.append(
             {
                 "variant_id": item.variant_id,
                 "product_id": variant["product_id"],
+                "brand_id": product["brand_id"],
                 "quantity": item.quantity,
                 "price_per_unit": price,
                 "subtotal": subtotal,
@@ -431,7 +440,6 @@ async def price_preview(order: OrderCreate):
     pricing = calculate_order_pricing(order, validated_items)
 
     return pricing
-
 
 
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
@@ -573,7 +581,7 @@ async def create_order(
             # 🎯 supplier details
             p = (
                 supabase.table("products")
-                .select("product_id, supplier_id, supplier_product_id")
+                .select("product_id, brand_id, price, supplier_id, supplier_product_id")
                 .eq("product_id", variant["product_id"])
                 .single()
                 .execute()
@@ -581,16 +589,24 @@ async def create_order(
 
             product = p.data
 
-            # 💰 variant price (canonical)
-            price_raw = variant.get("price")
+            # ensure product has brand (required for offers)
+            if not product["brand_id"]:
+                raise HTTPException(
+                    400,
+                    f"Product {variant['product_id']} has no brand assigned"
+                )
+
+
+            price_raw = product.get("price")
 
             if price_raw is None:
                 raise HTTPException(
                     400,
-                    f"Variant {variant_id} has no price available"
+                    f"Product {variant['product_id']} has no price available"
                 )
 
             price_per_unit = round(float(price_raw), 2)
+
 
             if price_per_unit <= 0:
                 raise HTTPException(
@@ -605,6 +621,7 @@ async def create_order(
                 {
                     "variant_id": variant_id,
                     "product_id": variant["product_id"],
+                    "brand_id": product["brand_id"],
                     "quantity": qty,
                     "price_per_unit": price_per_unit,
                     "subtotal": subtotal,
@@ -617,11 +634,26 @@ async def create_order(
 
         # 🔢 shared pricing (AFTER full loop)
         pricing = calculate_order_pricing(order, validated_items)
+        # print("[FINAL PRICING]", pricing)
+
 
         grand_total = pricing["total"]
         gst_amount = pricing["gst"]
         shipping_fee = pricing["shipping_fee"]
         cod_fee = pricing["cod_fee"]
+
+        # 🔎 Map brand → applied offer info
+        # Used later while inserting order_items
+        brand_offer_map = {}
+
+        for brand_id, data in pricing.get("brand_breakdown", {}).items():
+            if data.get("offer"):
+                brand_offer_map[brand_id] = {
+                    "offer_id": data["offer"]["offer_id"],
+                    "discount_type": data["offer"]["discount_type"],
+                    "total_discount": data["discount"],
+                }
+
 
     except Exception as e:
         if isinstance(e, HTTPException):
@@ -673,22 +705,54 @@ async def create_order(
     # 4️⃣ CREATE ORDER ITEMS (store VARIANT_ID!)
     try:
         payload = []
+
+        # count items per brand (used to split discount evenly)
+        brand_item_count = {}
         for item in validated_items:
+            brand_item_count[item["brand_id"]] = (
+                brand_item_count.get(item["brand_id"], 0) + 1
+            )
+
+        for item in validated_items:
+            applied_offer_id = None
+            discount_amount = 0.0
+            discount_type = None
+
+            # 🔎 check if this brand has an applied offer
+            if item["brand_id"] in brand_offer_map:
+                offer_info = brand_offer_map[item["brand_id"]]
+
+                applied_offer_id = offer_info["offer_id"]
+                discount_type = offer_info["discount_type"]
+
+                # split brand discount equally across items
+                discount_amount = round(
+                    offer_info["total_discount"]
+                    / brand_item_count[item["brand_id"]],
+                    2
+                )
+
             payload.append(
                 {
                     "order_id": new_order_id,
                     "product_id": item["product_id"],
-                    "variant_id": item["variant_id"],   # 👈 IMPORTANT
+                    "variant_id": item["variant_id"],
                     "quantity": item["quantity"],
                     "price_per_unit": item["price_per_unit"],
                     "subtotal": item["subtotal"],
+
+                    # ✅ offer persistence
+                    "applied_offer_id": applied_offer_id,
+                    "discount_amount": discount_amount,
+                    "discount_type": discount_type,
+
                     "supplier_id": item["supplier_id"],
                     "supplier_product_id": item["supplier_product_id"],
                 }
             )
 
         supabase.table("order_items").insert(payload).execute()
-        # print("[ORDER ITEMS INSERTED]", payload)
+        # print("[ORDER ITEMS OFFERS]", payload)
 
 
     except Exception as e:
@@ -730,7 +794,7 @@ async def create_order(
 
     # 6️⃣ DEDUCT STOCK PER VARIANT
     for item in validated_items:
-        update_res = (
+        (
             supabase
             .table("product_variants")
             .update({"stock_quantity": item["new_stock"]})
@@ -738,7 +802,6 @@ async def create_order(
             .execute()
         )
 
-        print("[STOCK AFTER UPDATE]", update_res.data)
 
     # 7️⃣ RETURN FINAL ORDER
     full_order = (

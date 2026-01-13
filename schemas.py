@@ -41,8 +41,8 @@ class Product(BaseModel):
     product_id: int
     base_product_id: Optional[int] = None
     product_name: str
-    category: Optional[str] = None
     description: Optional[str] = None
+
     price: float
     mrp: Optional[float] = None
     stock_quantity: int
@@ -55,6 +55,7 @@ class Product(BaseModel):
     segment: Optional[str] = None
     category: Optional[str] = None
     sub_category: Optional[str] = None
+    category_group: Optional[str] = None
 
     brand_name: Optional[str] = None
     supplier_mrp: Optional[float] = None
@@ -64,11 +65,6 @@ class Product(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-
-
-    # Product Variants
-    #size: Optional[str] = None
-    #color: Optional[str] = None # NEW: Color Field
 
     # CHANGED: These are now Lists of Strings
     sizes: Optional[List[str]] = Field(default_factory=list)
