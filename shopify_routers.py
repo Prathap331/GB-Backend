@@ -14,27 +14,13 @@ SHOPIFY_REDIRECT_URL = os.getenv("SHOPIFY_REDIRECT_URL")
 SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
 
 
-
 @router.get("/install")
-def shopify_install(shop: str):
-    """
-    Generates Shopify OAuth install URL (PUBLIC app, OAuth-enabled)
-    """
-
-    if not SHOPIFY_CLIENT_ID or not SHOPIFY_REDIRECT_URL:
-        raise HTTPException(status_code=500, detail="Shopify env not configured")
-
-    if not shop.endswith(".myshopify.com"):
-        raise HTTPException(status_code=400, detail="Invalid shop domain")
-
-    scopes = "read_products"
-
-    # IMPORTANT: generate state
+def shopify_install():
     state = str(uuid.uuid4())
 
     params = {
         "client_id": SHOPIFY_CLIENT_ID,
-        "scope": scopes,
+        "scope": "read_products",
         "redirect_uri": SHOPIFY_REDIRECT_URL,
         "state": state,
     }
@@ -44,26 +30,18 @@ def shopify_install(shop: str):
         + urllib.parse.urlencode(params)
     )
 
-    return {
-        "install_url": install_url
-    }
-
+    return {"install_url": install_url}
 
 
 @router.get("/oauth/callback")
 def shopify_oauth_callback(request: Request):
-    """
-    Handles Shopify OAuth callback:
-    - exchanges code for access token
-    - stores token in suppliers table
-    """
-
     code = request.query_params.get("code")
     shop = request.query_params.get("shop")
 
     if not code or not shop:
         raise HTTPException(status_code=400, detail="Missing code or shop")
 
+    # 1. Exchange code for access token
     token_url = f"https://{shop}/admin/oauth/access_token"
 
     payload = {
@@ -77,26 +55,44 @@ def shopify_oauth_callback(request: Request):
     if res.status_code != 200:
         raise HTTPException(status_code=400, detail="Failed to get access token")
 
-    data = res.json()
-    access_token = data.get("access_token")
-
+    access_token = res.json().get("access_token")
     if not access_token:
         raise HTTPException(status_code=400, detail="No access token returned")
 
-    # --- STORE / UPDATE SUPPLIER ---
-    supabase.table("suppliers").upsert({
-        "shop_domain": shop,
-        "shop_access_token": access_token,
-        "integration_type": "shopify",
-        "is_active": True
-    }, on_conflict="shop_domain").execute()
-
-    # Redirect supplier to success page
-    return RedirectResponse(
-        url="https://qdio.in/shopify-connected",
-        status_code=302
+    # 2. Check if supplier already exists
+    existing = (
+        supabase.table("suppliers")
+        .select("supplier_id")
+        .eq("shop_domain", shop)
+        .maybe_single()
+        .execute()
     )
 
+    if existing.data:
+        # 3A. Supplier already installed → UPDATE
+        supabase.table("suppliers").update({
+            "shop_access_token": access_token,
+            "is_active": True
+        }).eq("shop_domain", shop).execute()
+
+        return RedirectResponse(
+            url="https://qdio.in/shopify-already-connected",
+            status_code=302
+        )
+
+    else:
+        # 3B. First-time install → INSERT
+        supabase.table("suppliers").insert({
+            "shop_domain": shop,
+            "shop_access_token": access_token,
+            "integration_type": "shopify",
+            "is_active": True
+        }).execute()
+
+        return RedirectResponse(
+            url="https://qdio.in/shopify-connected",
+            status_code=302
+        )
 
 
 @router.post("/sync-products/{supplier_id}")
