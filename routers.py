@@ -19,7 +19,7 @@ from services import (
     supabase_anon
 )
 from schemas import (
-    Product, ProductUpdate, 
+    BrandResponse, Product, ProductUpdate, 
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
@@ -1120,3 +1120,18 @@ async def get_suppliers():
         return res.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+
+
+@router.get("/brands", response_model=List[BrandResponse])
+def get_brands():
+    res = (
+        supabase.table("brands").select("*")
+        .order("brand_name")
+        .execute()
+    )
+
+    if not res.data:
+        return []
+
+    return res.data

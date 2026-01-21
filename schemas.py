@@ -278,3 +278,18 @@ class Supplier(BaseModel):
     class Config:
         from_attributes = True
 
+
+
+
+class BrandResponse(BaseModel):
+    brand_id: UUID
+    brand_name: str
+    brand_logo: Optional[str] = None
+    background_imgs: Optional[List[str]] = None
+    brand_discount: Optional[str] = None
+    brand_types: Optional[List[str]] = None
+    tag_imgs: Optional[List[str]] = None
+    brand_tags: Optional[List[str]] = None
+
+    class Config:
+        from_attributes = True
