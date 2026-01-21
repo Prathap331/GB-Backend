@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Request
 import requests
 from fastapi.responses import RedirectResponse
 from services import supabase
-from utils import map_shopify_product, map_shopify_variant, upsert_product, upsert_variant
+from utils import dump_shopify_debug, map_shopify_product, map_shopify_variant, upsert_product, upsert_variant
 
 router = APIRouter(prefix="/shopify", tags=["Shopify"])
 
@@ -141,25 +141,33 @@ def sync_shopify_products(supplier_id: str):
 
     products = res.json().get("products", [])
 
-    # 3. Map & store products
-    synced = 0
+    dump_shopify_debug(products)
 
-    for p in products:
-        # 1. Save base product
-        product_res = upsert_product(
-            map_shopify_product(p, supplier_id)
-        )
+    
+    # # 3. Map & store products
+    # synced = 0
 
-        product_id = product_res.data[0]["product_id"]
+    # for p in products:
+    #     # 1. Save base product
+    #     product_res = upsert_product(
+    #         map_shopify_product(p, supplier_id)
+    #     )
 
-        # 2. Save variants
-        for v in p.get("variants", []):
-            upsert_variant(
-                map_shopify_variant(v, product_id)
-            )
-        synced += 1
+    #     product_id = product_res.data[0]["product_id"]
+
+    #     # 2. Save variants
+    #     for v in p.get("variants", []):
+    #         upsert_variant(
+    #             map_shopify_variant(v, product_id)
+    #         )
+    #     synced += 1
+
+    # return {
+    #     "message": "Shopify products synced successfully",
+    #     "count": synced
+    # }
 
     return {
-        "message": "Shopify products synced successfully",
-        "count": synced
+        "message": "Shopify products exported to CSV/JSON only. DB sync skipped.",
+        "count": len(products)
     }
