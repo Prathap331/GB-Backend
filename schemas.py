@@ -56,6 +56,7 @@ class Product(BaseModel):
     category: Optional[str] = None
     sub_category: Optional[str] = None
     category_group: Optional[str] = None
+    category_imgs: Optional[str] = None
 
     brand_name: Optional[str] = None
     supplier_mrp: Optional[float] = None
@@ -248,7 +249,7 @@ class Token(BaseModel):
 class Supplier(BaseModel):
     supplier_id: str
     key_person_name: Optional[str] = None
-    brand_names: Optional[List[str]] = None
+    brand_names: Optional[str] = None
 
     phone_number: Optional[str] = None
     email: Optional[str] = None
