@@ -261,11 +261,9 @@ class Supplier(BaseModel):
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
 
-    is_active: Optional[bool] = True
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
+    
     brand_tags: Optional[List[str]] = None
+    tag_imgs: Optional[List[str]] = None
     brand_store_images: Optional[Dict[str, Any]] = {"slider": [], "offer": None}
     brand_logo: Optional[str] = None
     video_urls: Optional[Dict[str, Optional[str]]] = {
@@ -274,6 +272,11 @@ class Supplier(BaseModel):
     }
     brand_intro: Optional[str] = None  
     brand_highlights: Optional[List[Dict[str, Any]]] = []
+
+    
+    is_active: Optional[bool] = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -288,7 +291,6 @@ class BrandResponse(BaseModel):
     background_imgs: Optional[List[str]] = None
     brand_discount: Optional[str] = None
     brand_types: Optional[List[str]] = None
-    tag_imgs: Optional[List[str]] = None
     brand_tags: Optional[List[str]] = None
 
     class Config:

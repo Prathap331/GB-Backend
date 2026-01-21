@@ -1126,9 +1126,7 @@ async def get_suppliers():
 @router.get("/brands", response_model=List[BrandResponse])
 def get_brands():
     res = (
-        supabase.table("brands").select("*")
-        .order("brand_name")
-        .execute()
+        supabase.table("brands").select("*").execute()
     )
 
     if not res.data:
