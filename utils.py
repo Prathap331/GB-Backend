@@ -8,6 +8,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from services import supabase
+from bs4 import BeautifulSoup
 
 
 
@@ -305,38 +306,46 @@ def map_supplier_product(p: dict, supplier_id: str):
 
 
 
+
+
+# to avoid storing html descriptions
+def clean_html(html):
+    if not html:
+        return None
+    return BeautifulSoup(html, "html.parser").get_text()
+
+
 # shopify supplier product mapping
 def map_shopify_product(p: dict, supplier_id: str):
-    variant = p["variants"][0] if p.get("variants") else {}
 
     # Primary image
     image_url = None
     if p.get("image") and p["image"].get("src"):
         image_url = p["image"]["src"]
 
-    # All images as list of URLs
     images = [
         img["src"]
         for img in p.get("images", [])
         if img.get("src")
     ]
 
-
     return {
         "supplier_id": supplier_id,
         "supplier_product_id": str(p["id"]),
 
         "product_name": p.get("title"),
-        "description": p.get("body_html") or "",
+        "description": clean_html(p.get("body_html")),
+        "description_html": p.get("body_html"),
 
-        "price": float(variant.get("price", 0)),
-        "mrp": float(variant.get("compare_at_price") or variant.get("price", 0)),
-        "image_url": image_url,  
-        "images": images, 
+        # BRAND (very important)
+        "brand_name": p.get("vendor"),
+
+        # PRODUCT does NOT own price or stock
+        "image_url": image_url,
+        "images": images,
 
         "is_active": True,
     }
-
 
 
 def map_shopify_variant(v: dict, product_id: int):
@@ -371,3 +380,48 @@ def upsert_variant(data: dict):
         on_conflict="supplier_variant_id"
     ).execute()
 
+
+
+def dump_shopify_debug(products: list):
+    """
+    Dumps Shopify raw data to files for inspection.
+    """
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    # JSON dump (full raw payload)
+    with open(f"shopify_debug_raw_{timestamp}.json", "w", encoding="utf-8") as f:
+        import json
+        json.dump(products, f, indent=2)
+
+    # CSV dump (important fields only)
+    with open(f"shopify_debug_summary_{timestamp}.csv", "w", newline="", encoding="utf-8") as f:
+        import csv
+        writer = csv.writer(f)
+
+        writer.writerow([
+            "shopify_product_id",
+            "title",
+            "vendor",
+            "body_html",
+            "variant_id",
+            "price",
+            "compare_at_price",
+            "inventory_quantity",
+            "option1",
+            "option2"
+        ])
+
+        for p in products:
+            for v in p.get("variants", []):
+                writer.writerow([
+                    p.get("id"),
+                    p.get("title"),
+                    p.get("vendor"),
+                    p.get("body_html"),
+                    v.get("id"),
+                    v.get("price"),
+                    v.get("compare_at_price"),
+                    v.get("inventory_quantity"),
+                    v.get("option1"),
+                    v.get("option2"),
+                ])
