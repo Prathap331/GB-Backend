@@ -382,46 +382,127 @@ def upsert_variant(data: dict):
 
 
 
-def dump_shopify_debug(products: list):
+def fetch_product_metafields(shop: str, token: str, product_id: int):
+    import requests
+
+    url = f"https://{shop}/admin/api/2024-01/products/{product_id}/metafields.json"
+    headers = {"X-Shopify-Access-Token": token}
+
+    res = requests.get(url, headers=headers, timeout=10)
+    
+    if res.status_code != 200:
+        return []
+    print(f"[DEBUG] [Product metafields] {res.json()}")
+    return res.json().get("metafields", [])
+
+
+
+def dump_shopify_debug(products: list, shop: str, token: str):
     """
-    Dumps Shopify raw data to files for inspection.
+    Dumps Shopify raw data + interpreted CSV including metafields.
     """
+    from datetime import datetime
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-    # JSON dump (full raw payload)
+    # 1️⃣ RAW JSON
     with open(f"shopify_debug_raw_{timestamp}.json", "w", encoding="utf-8") as f:
         import json
         json.dump(products, f, indent=2)
 
-    # CSV dump (important fields only)
+    # 2️⃣ CSV WITH METAFIELDS
     with open(f"shopify_debug_summary_{timestamp}.csv", "w", newline="", encoding="utf-8") as f:
         import csv
         writer = csv.writer(f)
 
         writer.writerow([
             "shopify_product_id",
-            "title",
+            "product_title",
             "vendor",
-            "body_html",
+            "product_type",
             "variant_id",
-            "price",
-            "compare_at_price",
+            "size",
+            "color",
+            "selling_price",
+            "mrp",
             "inventory_quantity",
-            "option1",
-            "option2"
+            "design",
+            "fit",
+            "neck",
+            "sleeve_type",
+            "wash_care",
+            "primary_image",
+            "all_images",
         ])
 
         for p in products:
+
+            # 🔹 OPTIONS MAP
+            option_map = {
+                opt.get("position"): opt.get("name", "").lower()
+                for opt in p.get("options", [])
+            }
+
+            # 🔹 IMAGE MAP
+            images = [img.get("src") for img in p.get("images", []) if img.get("src")]
+
+            # all_images → FIRST image is primary
+            all_images = ",".join(images)
+
+
+            # 🔹 METAFIELDS FETCH (PRODUCT LEVEL)
+            metafields = fetch_product_metafields(shop, token, p.get("id"))
+
+            design = fit = neck = sleeve = wash_care = None
+
+            for m in metafields:
+                key = m.get("key", "").lower()
+                val = m.get("value")
+
+                if key == "design":
+                    design = val
+                elif key == "fit":
+                    fit = val
+                elif key in ("neck", "neck_type"):
+                    neck = val
+                elif key in ("sleeve", "sleeve_type"):
+                    sleeve = val
+                elif key in ("wash_care", "washcare"):
+                    wash_care = val
+
+            # 🔹 VARIANTS
             for v in p.get("variants", []):
+
+                size = color = None
+
+                for pos, opt_name in option_map.items():
+                    value = v.get(f"option{pos}")
+                    if not value:
+                        continue
+                    if "size" in opt_name:
+                        size = value
+                    elif "color" in opt_name:
+                        color = value
+
+                selling_price = v.get("price")
+                mrp = v.get("compare_at_price") or selling_price
+
                 writer.writerow([
-                    p.get("id"),
+                    str(p.get("id")),
                     p.get("title"),
                     p.get("vendor"),
-                    p.get("body_html"),
-                    v.get("id"),
-                    v.get("price"),
-                    v.get("compare_at_price"),
+                    p.get("product_type"),
+                    str(v.get("id")),
+                    size,
+                    color,
+                    selling_price,
+                    mrp,
                     v.get("inventory_quantity"),
-                    v.get("option1"),
-                    v.get("option2"),
+                    design,
+                    fit,
+                    neck,
+                    sleeve,
+                    wash_care,
+                    all_images,
                 ])
+
+

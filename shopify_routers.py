@@ -32,7 +32,6 @@ def shopify_install():
 
     return {"install_url": install_url}
 
-
 @router.get("/oauth/callback")
 def shopify_oauth_callback(request: Request):
     code = request.query_params.get("code")
@@ -59,29 +58,16 @@ def shopify_oauth_callback(request: Request):
     if not access_token:
         raise HTTPException(status_code=400, detail="No access token returned")
 
-    # 2. Check if supplier already exists
+    # 2. Check if supplier already exists (SAFE WAY)
     existing = (
         supabase.table("suppliers")
         .select("supplier_id")
         .eq("shop_domain", shop)
-        .maybe_single()
         .execute()
     )
 
-    if existing.data:
-        # 3A. Supplier already installed → UPDATE
-        supabase.table("suppliers").update({
-            "shop_access_token": access_token,
-            "is_active": True
-        }).eq("shop_domain", shop).execute()
-
-        return RedirectResponse(
-            url="https://qdio.in/shopify-already-connected",
-            status_code=302
-        )
-
-    else:
-        # 3B. First-time install → INSERT
+    # 3A. Supplier NOT found → INSERT
+    if not existing or not existing.data:
         supabase.table("suppliers").insert({
             "shop_domain": shop,
             "shop_access_token": access_token,
@@ -93,6 +79,20 @@ def shopify_oauth_callback(request: Request):
             url="https://qdio.in/shopify-connected",
             status_code=302
         )
+
+    # 3B. Supplier already exists → UPDATE
+    supplier_id = existing.data[0]["supplier_id"]
+
+    supabase.table("suppliers").update({
+        "shop_access_token": access_token,
+        "is_active": True
+    }).eq("supplier_id", supplier_id).execute()
+
+    return RedirectResponse(
+        url="https://qdio.in/shopify-already-connected",
+        status_code=302
+    )
+
 
 
 @router.post("/sync-products/{supplier_id}")
@@ -141,7 +141,8 @@ def sync_shopify_products(supplier_id: str):
 
     products = res.json().get("products", [])
 
-    dump_shopify_debug(products)
+    dump_shopify_debug(products, shop, token)
+
 
     
     # # 3. Map & store products
