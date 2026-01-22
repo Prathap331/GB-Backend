@@ -1,7 +1,7 @@
 # routers.py
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timezone
 import uuid
 from fastapi import Header, HTTPException
@@ -19,7 +19,7 @@ from services import (
     supabase_anon
 )
 from schemas import (
-    BrandResponse, Product, ProductUpdate, 
+    BrandResponse, CategoryResponse, Product, ProductUpdate, 
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
@@ -1133,3 +1133,19 @@ def get_brands():
         return []
 
     return res.data
+
+
+@router.get("/categories", response_model=List[CategoryResponse])
+def get_categories(segment: Optional[str] = Query(default=None)):
+    try:
+        query = supabase.table("categories").select("*")
+
+        if segment:
+            query = query.eq("segment", segment)
+
+        res = query.execute()
+
+        return res.data or []
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch categories: {str(e)}")

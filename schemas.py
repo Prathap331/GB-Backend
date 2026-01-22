@@ -296,3 +296,11 @@ class BrandResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class CategoryResponse(BaseModel):
+    category_id: UUID
+    segment: str
+    category_name: str
+    category_imgs: Optional[str] = None
+    offer_label: Optional[str] = None
