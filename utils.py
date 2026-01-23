@@ -38,6 +38,7 @@ def calculate_order_pricing(order, validated_items):
         brand_map[brand_id]["quantity"] += item["quantity"]
 
     total_discount = 0.0
+    now = datetime.now(timezone.utc).isoformat()
 
     # 2️⃣ apply best offer per brand
     for brand_id, data in brand_map.items():
@@ -55,10 +56,8 @@ def calculate_order_pricing(order, validated_items):
             .eq("offer_scope.scope_id", brand_id)
             .eq("is_active", True)
             .lte("min_quantity", data["quantity"])
-            .eq("is_active", True)
-            .lte("min_quantity", data["quantity"])
-            .lte("start_date", "now()")
-            .gte("end_date", "now()")
+            .lte("start_date", now)
+            .gte("end_date", now)
             .execute()
         )
 

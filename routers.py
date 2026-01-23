@@ -438,7 +438,7 @@ async def price_preview(order: OrderCreate):
 
     # ---------- 🧮 Calculate totals ----------
     pricing = calculate_order_pricing(order, validated_items)
-
+    # print("[PRICE PREVIEW]", pricing)
     return pricing
 
 
@@ -806,7 +806,7 @@ async def create_order(
     # 7️⃣ RETURN FINAL ORDER
     full_order = (
         supabase.table("orders")
-        .select("*, order_items(*, products(product_name, category, image_url))")
+        .select("*, order_items(*, products(product_name, category, images))")
         .eq("order_id", new_order_id)
         .single()
         .execute()
