@@ -40,24 +40,20 @@ def calculate_order_pricing(order, validated_items):
     total_discount = 0.0
     now = datetime.now(timezone.utc).isoformat()
 
-    # 2️⃣ apply best offer per brand
+    # 2️⃣ apply best offer per brand (USING VIEW – STABLE)
     for brand_id, data in brand_map.items():
+
         offer_res = (
             supabase
-            .table("offers")
+            .table("brand_offer_active_view")
             .select("""
                 offer_id,
                 discount_type,
                 discount_value,
-                min_quantity,
-                offer_scope!inner(scope_type, scope_id)
+                min_quantity
             """)
-            .eq("offer_scope.scope_type", "brand")
-            .eq("offer_scope.scope_id", brand_id)
-            .eq("is_active", True)
+            .eq("brand_id", brand_id)
             .lte("min_quantity", data["quantity"])
-            .lte("start_date", now)
-            .gte("end_date", now)
             .execute()
         )
 
@@ -80,6 +76,7 @@ def calculate_order_pricing(order, validated_items):
         data["discount"] = discount
         data["offer"] = best_offer
         total_discount += discount
+
 
     # 3️⃣ final totals
     subtotal = round(sum(i["subtotal"] for i in validated_items), 2)
