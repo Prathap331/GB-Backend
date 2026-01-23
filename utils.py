@@ -9,6 +9,8 @@ from reportlab.pdfgen import canvas
 
 from services import supabase
 from bs4 import BeautifulSoup
+import csv
+import textwrap
 
 
 
@@ -312,7 +314,7 @@ def map_supplier_product(p: dict, supplier_id: str):
 def clean_html(html):
     if not html:
         return None
-    return BeautifulSoup(html, "html.parser").get_text()
+    return BeautifulSoup(html, "html.parser").get_text().strip()
 
 
 # shopify supplier product mapping
@@ -398,9 +400,6 @@ def fetch_product_metafields(shop: str, token: str, product_id: int):
 
 
 def dump_shopify_debug(products: list, shop: str, token: str):
-    """
-    Dumps Shopify raw data + interpreted CSV including metafields.
-    """
     from datetime import datetime
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
@@ -409,29 +408,39 @@ def dump_shopify_debug(products: list, shop: str, token: str):
         import json
         json.dump(products, f, indent=2)
 
-    # 2️⃣ CSV WITH METAFIELDS
+    # 2️⃣ DB-ALIGNED CSV
     with open(f"shopify_debug_summary_{timestamp}.csv", "w", newline="", encoding="utf-8") as f:
         import csv
         writer = csv.writer(f)
 
         writer.writerow([
-            "shopify_product_id",
-            "product_title",
-            "vendor",
-            "product_type",
-            "variant_id",
+            "supplier_product_id",
+            "supplier_variant_id",
+
+            "product_name",
+            "description",
+            "Product_description",
+
+            "brand_name",
+            "category",
+            "segment",
+            "sub_category",
+            "category_group",
+
+            "images",
+            "tags",
+
+            "Design",
+            "Fit",
+            "Neck",
+            "Sleeve_type",
+            "Wash_care",
+
             "size",
             "color",
-            "selling_price",
+            "stock_quantity",
+            "price",
             "mrp",
-            "inventory_quantity",
-            "design",
-            "fit",
-            "neck",
-            "sleeve_type",
-            "wash_care",
-            "primary_image",
-            "all_images",
         ])
 
         for p in products:
@@ -442,22 +451,30 @@ def dump_shopify_debug(products: list, shop: str, token: str):
                 for opt in p.get("options", [])
             }
 
-            # 🔹 IMAGE MAP
-            images = [img.get("src") for img in p.get("images", []) if img.get("src")]
+            # 🔹 IMAGES
+            images = [
+                img.get("src")
+                for img in p.get("images", [])
+                if img.get("src")
+            ]
+            images_csv = ",".join(images)
 
-            # all_images → FIRST image is primary
-            all_images = ",".join(images)
+            # 🔹 DESCRIPTIONS
+            long_desc = p.get("body_html")
+            short_desc = (
+                long_desc[:200] if long_desc else None
+            )
 
+            # 🔹 TAGS
+            tags = p.get("tags")  # comma-separated string
 
-            # 🔹 METAFIELDS FETCH (PRODUCT LEVEL)
+            # 🔹 METAFIELDS (optional)
             metafields = fetch_product_metafields(shop, token, p.get("id"))
-
             design = fit = neck = sleeve = wash_care = None
 
             for m in metafields:
                 key = m.get("key", "").lower()
                 val = m.get("value")
-
                 if key == "design":
                     design = val
                 elif key == "fit":
@@ -473,7 +490,6 @@ def dump_shopify_debug(products: list, shop: str, token: str):
             for v in p.get("variants", []):
 
                 size = color = None
-
                 for pos, opt_name in option_map.items():
                     value = v.get(f"option{pos}")
                     if not value:
@@ -483,26 +499,237 @@ def dump_shopify_debug(products: list, shop: str, token: str):
                     elif "color" in opt_name:
                         color = value
 
-                selling_price = v.get("price")
-                mrp = v.get("compare_at_price") or selling_price
+                price = v.get("price")
+                mrp = v.get("compare_at_price") or price
+                stock = v.get("inventory_quantity", 0)
 
                 writer.writerow([
                     str(p.get("id")),
+                    str(v.get("id")),
+
                     p.get("title"),
+                    short_desc,
+                    long_desc,
+
                     p.get("vendor"),
                     p.get("product_type"),
-                    str(v.get("id")),
-                    size,
-                    color,
-                    selling_price,
-                    mrp,
-                    v.get("inventory_quantity"),
+                    None,          # segment
+                    None,          # sub_category
+                    None,          # category_group
+
+                    images_csv,
+                    tags,
+
                     design,
                     fit,
                     neck,
                     sleeve,
                     wash_care,
-                    all_images,
+
+                    size,
+                    color,
+                    stock,
+                    price,
+                    mrp,
                 ])
 
+# for filling missing details - segment, sub-category, category-group, descriptions
 
+
+# =========================================================
+# TAG NORMALIZATION
+# =========================================================
+def normalize_tags(tags: str) -> set:
+    """
+    Converts:
+      "Men, Oversized, Graphic"
+    → {"men", "oversized", "graphic"}
+    """
+    if not tags:
+        return set()
+    return {t.strip().lower() for t in tags.split(",")}
+
+
+# =========================================================
+# RULE MAPS (EXTENDABLE)
+# =========================================================
+
+# Segment (who it is for)
+SEGMENT_RULES = {
+    "men": "Men",
+    "mens": "Men",
+    "male": "Men",
+    "women": "Women",
+    "womens": "Women",
+    "female": "Women",
+    "kids": "Kids",
+    "boys": "Kids",
+    "girls": "Kids",
+}
+
+# Sub-category (style / type)
+# Order = priority (top wins)
+SUB_CATEGORY_RULES = {
+    "oversized": "Oversized",
+    "graphic": "Graphic",
+    "printed": "Graphic",
+    "plain": "Plain",
+    "solid": "Plain",
+    "washed": "Washed",
+    "cropped": "Cropped",
+    "relaxed": "Relaxed Fit",
+}
+
+# Category group (topwear / bottomwear)
+CATEGORY_GROUP_KEYWORDS = {
+    "Topwear": ["t-shirt", "shirt", "top", "hoodie", "sweatshirt"],
+    "Bottomwear": ["jeans", "pant", "trouser", "short"],
+}
+
+
+# =========================================================
+# RULE DERIVATION FUNCTIONS
+# =========================================================
+def derive_segment(tags: set) -> str | None:
+    for tag in tags:
+        if tag in SEGMENT_RULES:
+            return SEGMENT_RULES[tag]
+    return None
+
+
+def derive_sub_category(tags: set) -> str | None:
+    """
+    Returns the FIRST matching sub-category based on priority.
+    """
+    for tag, sub_cat in SUB_CATEGORY_RULES.items():
+        if tag in tags:
+            return sub_cat
+    return None
+
+
+def derive_category_group(category: str) -> str | None:
+    """
+    category = Shopify product_type
+    """
+    if not category:
+        return None
+
+    cat = category.lower()
+
+    for group, keywords in CATEGORY_GROUP_KEYWORDS.items():
+        if any(k in cat for k in keywords):
+            return group
+
+    return None
+
+
+# =========================================================
+# DESCRIPTION ENRICHMENT
+# =========================================================
+def derive_short_description(long_desc: str) -> str | None:
+    if not long_desc:
+        return None
+
+    clean_text = clean_html(long_desc)
+
+    return textwrap.shorten(
+        clean_text,
+        width=180,
+        placeholder="..."
+    )
+
+
+
+def build_keywords(row: dict) -> set:
+    keywords = set()
+
+    def add_text(text):
+        if not text:
+            return
+        for w in text.lower().replace("-", " ").split():
+            keywords.add(w)
+
+    # From tags
+    add_text(row.get("tags"))
+
+    # From product type
+    add_text(row.get("category"))
+
+    # From title
+    add_text(row.get("product_name"))
+
+    # From metafields (already resolved to text)
+    add_text(row.get("Design"))
+    add_text(row.get("Fit"))
+    add_text(row.get("Neck"))
+    add_text(row.get("Sleeve_type"))
+
+    return keywords
+
+
+# =========================================================
+# MAIN ENRICHMENT FUNCTION
+# =========================================================
+def enrich_products_csv(input_csv: str, output_csv: str):
+    """
+    Reads RAW Shopify CSV →
+    applies rule-based enrichment →
+    writes CLEAN CSV for DB import.
+
+    This function is meant to be RUN MANUALLY
+    after CSV generation.
+    """
+
+    with open(input_csv, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+
+    for row in rows:
+
+        # -------------------------
+        # TAGS
+        # -------------------------
+        keywords = build_keywords(row)
+
+        # -------------------------
+        # SEGMENT / CATEGORY
+        # -------------------------
+        row["segment"] = row.get("segment") or derive_segment(keywords)
+        row["sub_category"] = row.get("sub_category") or derive_sub_category(keywords)
+        row["category_group"] = row.get("category_group") or derive_category_group(
+            row.get("category")
+        )
+
+
+        # -------------------------
+        # DESCRIPTIONS
+        # -------------------------
+        # Short missing → derive from long
+        if not row.get("description") and row.get("Product_description"):
+            row["description"] = derive_short_description(
+                row["Product_description"]
+            )
+
+        # Long missing → fallback to short
+        if not row.get("Product_description") and row.get("description"):
+            row["Product_description"] = row["description"]
+
+        # NOTE:
+        # If still None → UI should hide that section
+
+    # -------------------------
+    # WRITE CLEAN CSV
+    # -------------------------
+    with open(output_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+
+if __name__ == "__main__":
+
+    enrich_products_csv(
+            input_csv="shopify_debug_summary_20260122_125516.csv",
+            output_csv="shopify_products_cleaned.csv"
+        )
