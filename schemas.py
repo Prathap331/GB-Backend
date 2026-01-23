@@ -304,3 +304,46 @@ class CategoryResponse(BaseModel):
     category_name: str
     category_imgs: Optional[str] = None
     offer_label: Optional[str] = None
+
+
+
+
+class PartnerCreate(BaseModel):
+    full_name: str
+    phone_number: str
+    email_id: EmailStr
+    city_location: Optional[str] = None
+
+    primary_roles: Optional[List[str]] = None
+    languages_used: Optional[List[str]] = None
+    community_types: Optional[List[str]] = None
+
+    total_community_count: Optional[int] = None
+
+    whatsapp_group_links: Optional[List[str]] = None
+    telegram_links: Optional[List[str]] = None
+    instagram_profile_links: Optional[List[str]] = None
+    facebook_links: Optional[List[str]] = None
+    youtube_channel_links: Optional[List[str]] = None
+
+    creates_content: Optional[bool] = None
+    content_types: Optional[List[str]] = None
+
+    primary_platforms: Optional[List[str]] = None
+    audience_gender: Optional[str] = None
+    audience_age_groups: Optional[List[str]] = None
+
+    deal_sharing_experience: Optional[bool] = None
+    preferred_product_price_range: Optional[str] = None
+    styles_willing_to_promote: Optional[List[str]] = None
+
+    promote_group_deals: Optional[bool] = None
+    expected_monthly_earnings: Optional[int] = None
+    other_income_sources: Optional[List[str]] = None
+
+
+class PartnerResponse(PartnerCreate):
+    partner_id: UUID
+    created_at: datetime
+
+

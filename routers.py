@@ -19,7 +19,7 @@ from services import (
     supabase_anon
 )
 from schemas import (
-    BrandResponse, CategoryResponse, Product, ProductUpdate, 
+    BrandResponse, CategoryResponse, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
@@ -1149,3 +1149,35 @@ def get_categories(segment: Optional[str] = Query(default=None)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch categories: {str(e)}")
+
+
+
+@router.post("/partners", response_model=PartnerResponse)
+def submit_partner_application(payload: PartnerCreate):
+    try:
+        res = supabase.table("partners").insert(payload.model_dump()).execute()
+
+        if not res.data:
+            raise HTTPException(status_code=400, detail="Failed to submit application")
+
+        return res.data[0]
+
+    except Exception as e:
+        msg = str(e)
+
+        # ✅ Unique constraint violation
+        if "duplicate key value violates unique constraint" in msg:
+            raise HTTPException(
+                status_code=409,
+                detail="Application already exists with this email"
+            )
+
+        raise HTTPException(status_code=500, detail=msg)
+
+
+# ✅ Get All Partner Applications (Admin use)
+@router.get("/partners", response_model=list[PartnerResponse])
+def get_all_partner_applications():
+    res = supabase.table("partners").select("*").order("created_at", desc=True).execute()
+    return res.data
+
