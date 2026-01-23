@@ -830,7 +830,7 @@ async def create_order(
 async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
     try:
         # The query string here is critical. We ask for products explicitly.
-        res = supabase.table("orders").select("*, order_items(*, products(product_name,category, image_url))").eq("user_id", str(current_user.id)).order("created_at", desc=True).execute()
+        res = supabase.table("orders").select("*, order_items(*, products(product_name,category, images))").eq("user_id", str(current_user.id)).order("created_at", desc=True).execute()
         
         return [Order.model_validate(o) for o in res.data]
     
@@ -845,8 +845,8 @@ async def get_my_single_order(order_id: int, current_user: UserResponse = Depend
         res = supabase.table("orders").select("*, order_items(*)").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
         if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
         return res.data'''
-        # UPDATED QUERY: Fetch nested products(product_name, image_url)
-        res = supabase.table("orders").select("*, order_items(*, products(product_name,category, image_url))").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
+        # UPDATED QUERY: Fetch nested products(product_name, images)
+        res = supabase.table("orders").select("*, order_items(*, products(product_name,category, images))").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
         if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
         
        
@@ -900,7 +900,7 @@ async def update_order(
         # fetch updated
         final_res = (
             supabase.table("orders")
-            .select("*, order_items(*, products(product_name,category, image_url))")
+            .select("*, order_items(*, products(product_name,category, images))")
             .eq("order_id", order_id)
             .execute()
         )

@@ -47,7 +47,7 @@ class Product(BaseModel):
     mrp: Optional[float] = None
     stock_quantity: int
     unit: Optional[str] = None
-    image_url: Optional[str] = None
+
 
     supplier_id: Optional[str] = None
     supplier_product_id: Optional[str] = None
@@ -114,7 +114,7 @@ class ProductUpdate(BaseModel):
 class ProductSimple(BaseModel):
     product_name: str
     category: Optional[str] = None
-    image_url: Optional[str] = None
+    images: Optional[List[str]] = None
     class Config: from_attributes = True
 
 # Delivery Partner Schemas

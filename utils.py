@@ -316,11 +316,6 @@ def clean_html(html):
 # shopify supplier product mapping
 def map_shopify_product(p: dict, supplier_id: str):
 
-    # Primary image
-    image_url = None
-    if p.get("image") and p["image"].get("src"):
-        image_url = p["image"]["src"]
-
     images = [
         img["src"]
         for img in p.get("images", [])
@@ -333,13 +328,13 @@ def map_shopify_product(p: dict, supplier_id: str):
 
         "product_name": p.get("title"),
         "description": clean_html(p.get("body_html")),
-        "description_html": p.get("body_html"),
+          # ✅ store full html-cleaned long description here
+        "Product_description": clean_html(p.get("body_html")),
 
         # BRAND (very important)
         "brand_name": p.get("vendor"),
 
-        # PRODUCT does NOT own price or stock
-        "image_url": image_url,
+        
         "images": images,
 
         "is_active": True,
