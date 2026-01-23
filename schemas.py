@@ -68,7 +68,7 @@ class Product(BaseModel):
 
 
     # CHANGED: These are now Lists of Strings
-    sizes: Optional[List[str]] = Field(default_factory=list)
+    
     color: Optional[str] = None
     
 

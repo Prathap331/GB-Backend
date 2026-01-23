@@ -286,7 +286,17 @@ async def get_products_by_base_id(base_product_id: int):
                 detail="No variants found for this base product"
             )
 
-        return res.data
+        products = res.data
+    
+         # ✅ Convert images string → list
+        for p in products:
+            if isinstance(p.get("images"), str):
+                try:
+                    p["images"] = json.loads(p["images"])
+                except:
+                    p["images"] = []
+
+        return products
 
     except Exception as e:
         raise HTTPException(
@@ -331,7 +341,6 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
 
 
 
-
 @router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
 
@@ -352,14 +361,14 @@ async def price_preview(order: OrderCreate):
             if not check.data or check.data["product_id"] != item.product_id:
                 item.variant_id = None  # force fallback
 
-        # 🔁 2️⃣ Resolve variant using product + size + color
+
+        # 🔁 2️⃣ Resolve variant using product + size (✅ color removed)
         if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
             v = (
                 supabase.table("product_variants")
                 .select("variant_id, product_id, stock_quantity")
                 .eq("product_id", item.product_id)
                 .eq("size", item.size)
-                .eq("color", item.color)
                 .maybe_single()
                 .execute()
             )
@@ -367,7 +376,7 @@ async def price_preview(order: OrderCreate):
             if not v or not v.data:
                 raise HTTPException(
                     400,
-                    f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
+                    f"No variant found for product {item.product_id} with size '{item.size}'"
                 )
 
             variant = v.data
@@ -383,12 +392,14 @@ async def price_preview(order: OrderCreate):
             )
             variant = v.data
 
+
         # 📦 stock validation
         if variant["stock_quantity"] < item.quantity:
             raise HTTPException(
                 400,
                 f"Not enough stock for variant {item.variant_id}"
             )
+
 
         # 🔎 3️⃣ Fetch product (brand + price)
         p = (
@@ -438,12 +449,10 @@ async def price_preview(order: OrderCreate):
 
     # ---------- 🧮 Calculate totals ----------
     pricing = calculate_order_pricing(order, validated_items)
-    # print("[PRICE PREVIEW]", pricing)
     return pricing
 
 
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
-
 
 @router.post("/orders", response_model=Order)
 async def create_order(
@@ -451,7 +460,7 @@ async def create_order(
     current_user: UserResponse = Depends(get_current_user)
 ):
     """
-    Create a new order using variant_id (size/color).
+    Create a new order using variant_id (size-based).
     Validates stock from product_variants and stores variant_id in order_items.
     """
 
@@ -537,14 +546,13 @@ async def create_order(
                     variant_id = None   # force fallback
 
 
-            # 🔁 2️⃣ fallback: find variant from product + size + color
+            # 🔁 2️⃣ fallback: find variant from product + size (✅ color removed)
             if not variant_id or str(variant_id).lower() in ["", "none", "null"]:
                 v = (
                     supabase.table("product_variants")
-                    .select("variant_id, product_id, color, size, stock_quantity, price, mrp")
+                    .select("variant_id, product_id, size, stock_quantity, price, mrp")
                     .eq("product_id", item.product_id)
                     .eq("size", item.size)
-                    .eq("color", item.color)
                     .maybe_single()
                     .execute()
                 )
@@ -552,7 +560,7 @@ async def create_order(
                 if not v or not v.data:
                     raise HTTPException(
                         400,
-                        f"No variant found for product {item.product_id} with size '{item.size}' and color '{item.color}'"
+                        f"No variant found for product {item.product_id} with size '{item.size}'"
                     )
 
                 variant = v.data
@@ -562,7 +570,7 @@ async def create_order(
                 # already valid → fetch full row
                 v = (
                     supabase.table("product_variants")
-                    .select("variant_id, product_id, color, size, stock_quantity, price, mrp")
+                    .select("variant_id, product_id, size, stock_quantity, price, mrp")
                     .eq("variant_id", variant_id)
                     .single()
                     .execute()
@@ -575,10 +583,10 @@ async def create_order(
             if variant["stock_quantity"] < qty:
                 raise HTTPException(
                     400,
-                    f"Not enough stock for {variant['color']} / {variant['size']}"
+                    f"Not enough stock for size {variant['size']}"
                 )
 
-            # 🎯 supplier details
+            # 🎯 supplier details + product price
             p = (
                 supabase.table("products")
                 .select("product_id, brand_id, price, supplier_id, supplier_product_id")
@@ -590,12 +598,11 @@ async def create_order(
             product = p.data
 
             # ensure product has brand (required for offers)
-            if not product["brand_id"]:
+            if not product.get("brand_id"):
                 raise HTTPException(
                     400,
                     f"Product {variant['product_id']} has no brand assigned"
                 )
-
 
             price_raw = product.get("price")
 
@@ -606,7 +613,6 @@ async def create_order(
                 )
 
             price_per_unit = round(float(price_raw), 2)
-
 
             if price_per_unit <= 0:
                 raise HTTPException(
@@ -634,16 +640,13 @@ async def create_order(
 
         # 🔢 shared pricing (AFTER full loop)
         pricing = calculate_order_pricing(order, validated_items)
-        # print("[FINAL PRICING]", pricing)
-
 
         grand_total = pricing["total"]
         gst_amount = pricing["gst"]
         shipping_fee = pricing["shipping_fee"]
         cod_fee = pricing["cod_fee"]
 
-        # 🔎 Map brand → applied offer info
-        # Used later while inserting order_items
+        # 🔎 Map brand → applied offer info (used later while inserting order_items)
         brand_offer_map = {}
 
         for brand_id, data in pricing.get("brand_breakdown", {}).items():
@@ -653,7 +656,6 @@ async def create_order(
                     "discount_type": data["offer"]["discount_type"],
                     "total_discount": data["discount"],
                 }
-
 
     except Exception as e:
         if isinstance(e, HTTPException):
@@ -680,11 +682,9 @@ async def create_order(
         }
 
         order_res = supabase.table("orders").insert(order_data).execute()
-        # print("[ORDER CREATED RESPONSE]", order_res.data)
 
         if not order_res.data:
             raise HTTPException(500, "Order insert returned no data")
-
 
         new_order = order_res.data[0]
         new_order_id = new_order["order_id"]
@@ -702,7 +702,8 @@ async def create_order(
         raise HTTPException(500, f"Error creating order in DB: {e}")
 
 
-    # 4️⃣ CREATE ORDER ITEMS (store VARIANT_ID!)
+
+    # 4️⃣ CREATE ORDER ITEMS (store VARIANT_ID)
     try:
         payload = []
 
@@ -718,7 +719,7 @@ async def create_order(
             discount_amount = 0.0
             discount_type = None
 
-            # 🔎 check if this brand has an applied offer
+            # check if this brand has an applied offer
             if item["brand_id"] in brand_offer_map:
                 offer_info = brand_offer_map[item["brand_id"]]
 
@@ -741,7 +742,7 @@ async def create_order(
                     "price_per_unit": item["price_per_unit"],
                     "subtotal": item["subtotal"],
 
-                    # ✅ offer persistence
+                    # offer persistence
                     "applied_offer_id": applied_offer_id,
                     "discount_amount": discount_amount,
                     "discount_type": discount_type,
@@ -752,12 +753,11 @@ async def create_order(
             )
 
         supabase.table("order_items").insert(payload).execute()
-        # print("[ORDER ITEMS OFFERS]", payload)
-
 
     except Exception as e:
         supabase.table("orders").delete().eq("order_id", new_order_id).execute()
         raise HTTPException(500, f"Error creating order items: {e}")
+
 
 
     # 5️⃣ RAZORPAY LOGIC (unchanged)
@@ -780,16 +780,15 @@ async def create_order(
             )
 
             razorpay_order_id = rzp_order["id"]
-            # print("[RAZORPAY ORDER CREATED]", razorpay_order_id)
 
             supabase.table("orders").update(
                 {"razorpay_order_id": razorpay_order_id}
             ).eq("order_id", new_order_id).execute()
 
         except Exception as e:
-            # print("[RAZORPAY ERROR]", str(e))
             supabase.table("orders").delete().eq("order_id", new_order_id).execute()
             raise HTTPException(500, f"Razorpay creation failed: {e}")
+
 
 
     # 6️⃣ DEDUCT STOCK PER VARIANT
@@ -801,6 +800,7 @@ async def create_order(
             .eq("variant_id", item["variant_id"])
             .execute()
         )
+
 
 
     # 7️⃣ RETURN FINAL ORDER
@@ -1044,7 +1044,7 @@ def get_product_variants(product_id: int):
         result = (
             supabase
             .table("product_variants")
-            .select("variant_id, product_id, color, size, stock_quantity,mrp,price")
+            .select("variant_id, product_id, size, stock_quantity,mrp,price")
             .eq("product_id", product_id)
             .execute()
         )
@@ -1068,7 +1068,7 @@ def list_variants(product_id: int | None = None):
         query = (
             supabase
             .table("product_variants")
-            .select("variant_id, product_id, color, size, stock_quantity, mrp, price")
+            .select("variant_id, product_id, size, stock_quantity, mrp, price")
         )
 
         if product_id is not None:
@@ -1077,7 +1077,6 @@ def list_variants(product_id: int | None = None):
         result = (
             query
             .order("product_id")
-            .order("color")
             .order("size")
             .execute()
         )
@@ -1097,7 +1096,7 @@ def get_variant(variant_id: int):
         result = (
             supabase
             .table("product_variants")
-            .select("variant_id, product_id, color, size, stock_quantity, mrp, price")
+            .select("variant_id, product_id, size, stock_quantity, mrp, price")
             .eq("variant_id", variant_id)
             .single()
             .execute()
