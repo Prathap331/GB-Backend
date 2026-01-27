@@ -347,3 +347,28 @@ class PartnerResponse(PartnerCreate):
     created_at: datetime
 
 
+class CouponGenerateRequest(BaseModel):
+    brand_code: str = Field(..., example="QDIO")
+
+class CouponGenerateResponse(BaseModel):
+    coupon_code: str
+    brand_name: str
+    brand_code: str
+    offer_name: str
+    discount_type: str
+    discount_value: float
+    used_count: int
+
+
+class CartItem(BaseModel):
+    variant_id: int
+
+class CouponValidateRequest(BaseModel):
+    coupon_code: str
+    cart_items: List[CartItem]
+
+class CouponValidateResponse(BaseModel):
+    valid: bool
+    coupon_id: str
+    partner_id: str
+    message: str

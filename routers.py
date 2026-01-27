@@ -19,7 +19,7 @@ from services import (
     supabase_anon
 )
 from schemas import (
-    BrandResponse, CategoryResponse, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
+    BrandResponse, CategoryResponse, CouponGenerateRequest, CouponGenerateResponse, CouponValidateRequest, CouponValidateResponse, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
@@ -1180,3 +1180,128 @@ def get_all_partner_applications():
     res = supabase.table("partners").select("*").order("created_at", desc=True).execute()
     return res.data
 
+
+
+@router.post("/partners/coupon", response_model=CouponGenerateResponse)
+async def generate_coupon(
+    payload: CouponGenerateRequest,
+    user: UserResponse = Depends(get_current_user)
+):
+    # 1️⃣ Resolve partner using email
+    partner_resp = (
+        supabase.table("partners")
+        .select("partner_id, partner_code")
+        .eq("email_id", user.email)
+        .maybe_single()
+        .execute()
+    )
+
+    if not partner_resp or not partner_resp.data:
+        raise HTTPException(status_code=403, detail="Not a registered DD")
+
+    partner = partner_resp.data
+    partner_id = partner["partner_id"]
+    partner_code = partner["partner_code"]
+
+    # 2️⃣ Resolve brand
+    brand_resp = (
+        supabase.table("brands")
+        .select("brand_id, brand_name, brand_code")
+        .eq("brand_code", payload.brand_code.upper())
+        .maybe_single()
+        .execute()
+    )
+
+    if not brand_resp or not brand_resp.data:
+        raise HTTPException(status_code=404, detail="Invalid brand code")
+
+    brand = brand_resp.data
+    brand_id = brand["brand_id"]
+
+    # 3️⃣ Resolve active offer from VIEW
+    offer_resp = (
+        supabase.table("brand_offer_active_view")
+        .select(
+            "brand_id, brand_name, offer_id, offer_name, discount_type, discount_value"
+        )
+        .eq("brand_id", brand_id)
+        .maybe_single()
+        .execute()
+    )
+
+    if not offer_resp or not offer_resp.data:
+        raise HTTPException(status_code=400, detail="No active offer found")
+
+    offer = offer_resp.data
+
+    # 4️⃣ Check if coupon already exists
+    existing_resp = (
+        supabase.table("coupons")
+        .select("*")
+        .eq("partner_id", partner_id)
+        .eq("brand_id", brand_id)
+        .maybe_single()
+        .execute()
+    )
+
+    if existing_resp and existing_resp.data:
+        coupon = existing_resp.data
+    else:
+        today = datetime.utcnow().strftime("%Y%m%d")
+
+        coupon_code = (
+            f"{brand['brand_code']}"
+            f"{int(offer['discount_value'])}"
+            f"-{today}"
+            f"-{partner_code}"
+        )
+
+
+        insert_resp = (
+            supabase.table("coupons")
+            .insert({
+                "coupon_code": coupon_code,
+                "partner_id": partner_id,
+                "brand_id": brand_id,
+                "offer_id": offer["offer_id"],
+            })
+            .execute()
+        )
+
+        if not insert_resp or not insert_resp.data:
+            raise HTTPException(status_code=500, detail="Failed to create coupon")
+
+        coupon = insert_resp.data[0]
+
+    # 5️⃣ Return readable response
+    return {
+        "coupon_code": coupon["coupon_code"],
+        "brand_name": brand["brand_name"],
+        "brand_code": brand["brand_code"],
+        "offer_name": offer["offer_name"],
+        "discount_type": offer["discount_type"],
+        "discount_value": offer["discount_value"],
+        "used_count": coupon["used_count"],
+    }
+
+@router.post("/coupons/validate", response_model=CouponValidateResponse)
+async def validate_coupon(payload: CouponValidateRequest):
+    variant_ids = [item.variant_id for item in payload.cart_items]
+
+    resp = supabase.rpc(
+        "validate_coupon_for_cart",
+        {
+            "p_coupon_code": payload.coupon_code,
+            "p_variant_ids": variant_ids,
+        }
+    ).execute()
+
+    if not resp or not resp.data:
+        return {
+            "valid": False,
+            "coupon_id": "",
+            "partner_id": "",
+            "message": "Validation failed",
+        }
+
+    return resp.data[0]
