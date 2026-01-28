@@ -164,6 +164,8 @@ class OrderCreate(BaseModel):
     items: List[OrderItemCreate]
     payment_method: str # 'COD', 'Online', 'Wallet'
     opt_out_delivery: Optional[bool] = False
+    coupon_id: Optional[UUID] = None
+    partner_id: Optional[UUID] = None
 
 # Add this near your other schemas (like OrderCreate)
 class OrderUpdate(BaseModel):
@@ -369,6 +371,6 @@ class CouponValidateRequest(BaseModel):
 
 class CouponValidateResponse(BaseModel):
     valid: bool
-    coupon_id: str
-    partner_id: str
+    coupon_id: Optional[str]= None
+    partner_id: Optional[str]= None
     message: str

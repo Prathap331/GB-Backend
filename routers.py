@@ -641,6 +641,36 @@ async def create_order(
         # 🔢 shared pricing (AFTER full loop)
         pricing = calculate_order_pricing(order, validated_items)
 
+        # 2️⃣.5 APPLY COUPON (BACKEND AUTHORITY)
+        coupon_data = None
+
+        if order.coupon_code:
+            variant_ids = [item["variant_id"] for item in validated_items]
+
+            res = supabase.rpc(
+                "validate_coupon_for_cart",
+                {
+                    "p_coupon_code": order.coupon_code,
+                    "p_variant_ids": variant_ids,
+                }
+            ).execute()
+
+            if not res.data:
+                raise HTTPException(400, "Coupon validation failed")
+
+            coupon_data = res.data[0]
+
+            if not coupon_data["valid"]:
+                raise HTTPException(400, coupon_data["message"])
+            
+
+        if coupon_data:
+            coupon_discount = round(pricing["total"] * 0.40, 2)  # example 40%
+            pricing["coupon_discount"] = coupon_discount
+            pricing["total"] -= coupon_discount
+
+
+
         grand_total = pricing["total"]
         gst_amount = pricing["gst"]
         shipping_fee = pricing["shipping_fee"]
@@ -680,6 +710,12 @@ async def create_order(
             "lucky_number": lucky_numbers,
             "opt_out_delivery": order.opt_out_delivery,
         }
+
+        # ✅ STEP 5: Attach coupon ONLY from backend validation
+        if coupon_data:
+            order_data["coupon_id"] = coupon_data["coupon_id"]
+            order_data["partner_id"] = coupon_data["partner_id"]
+
 
         order_res = supabase.table("orders").insert(order_data).execute()
 
@@ -953,18 +989,41 @@ async def verify_payment(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Verification error: {e}")
 
-    # 3. Update DB
+    # 3. Update DB (order confirmation + coupon usage)
     try:
-        update_data = {
-            "payment_status": "Completed",
-            "order_status": "Confirmed",
-            "razorpay_payment_id": data.razorpay_payment_id
-        }
-        supabase.table("orders").update(update_data).eq("order_id", data.order_id).execute()
-        
+        # 3️⃣.1 Mark order as completed (idempotent)
+        update_res = (
+            supabase
+            .table("orders")
+            .update(
+                {
+                    "payment_status": "Completed",
+                    "order_status": "Confirmed",
+                    "razorpay_payment_id": data.razorpay_payment_id,
+                }
+            )
+            .eq("order_id", data.order_id)
+            .neq("payment_status", "Completed")   # 👈 VERY IMPORTANT
+            .execute()
+        )
+
+        # 3️⃣.2 Increment coupon usage ONLY if order was just completed
+        if update_res.data and len(update_res.data) > 0:
+            order_row = update_res.data[0]
+
+            if order_row.get("coupon_id"):
+                supabase.table("coupons").update(
+                    {"used_count": supabase.literal("used_count + 1")}
+                ).eq("coupon_id", order_row["coupon_id"]).execute()
+
         return {"status": "success", "message": "Payment verified and order confirmed"}
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"DB update failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"DB update failed: {e}"
+        )
+
     
 
 
