@@ -366,7 +366,7 @@ async def price_preview(order: OrderCreate):
         if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
             v = (
                 supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity","size")
+                .select("variant_id, product_id, stock_quantity, size")
                 .eq("product_id", item.product_id)
                 .eq("size", item.size)
                 .maybe_single()
@@ -385,7 +385,7 @@ async def price_preview(order: OrderCreate):
         else:
             v = (
                 supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity","size")
+                .select("variant_id, product_id, stock_quantity, size")
                 .eq("variant_id", item.variant_id)
                 .single()
                 .execute()
