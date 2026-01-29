@@ -114,6 +114,7 @@ class ProductUpdate(BaseModel):
 class ProductSimple(BaseModel):
     product_name: str
     category: Optional[str] = None
+    sub_category: Optional[str] = None
     images: Optional[List[str]] = None
     class Config: from_attributes = True
 
@@ -164,8 +165,7 @@ class OrderCreate(BaseModel):
     items: List[OrderItemCreate]
     payment_method: str # 'COD', 'Online', 'Wallet'
     opt_out_delivery: Optional[bool] = False
-    coupon_id: Optional[UUID] = None
-    partner_id: Optional[UUID] = None
+    coupon_code: Optional[str] = None
 
 # Add this near your other schemas (like OrderCreate)
 class OrderUpdate(BaseModel):

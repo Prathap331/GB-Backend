@@ -366,7 +366,7 @@ async def price_preview(order: OrderCreate):
         if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
             v = (
                 supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity")
+                .select("variant_id, product_id, stock_quantity","size")
                 .eq("product_id", item.product_id)
                 .eq("size", item.size)
                 .maybe_single()
@@ -385,7 +385,7 @@ async def price_preview(order: OrderCreate):
         else:
             v = (
                 supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity")
+                .select("variant_id, product_id, stock_quantity","size")
                 .eq("variant_id", item.variant_id)
                 .single()
                 .execute()
@@ -404,7 +404,7 @@ async def price_preview(order: OrderCreate):
         # 🔎 3️⃣ Fetch product (brand + price)
         p = (
             supabase.table("products")
-            .select("product_id, brand_id, price")
+            .select("product_id, brand_id, price, color")
             .eq("product_id", variant["product_id"])
             .single()
             .execute()
@@ -444,6 +444,9 @@ async def price_preview(order: OrderCreate):
                 "quantity": item.quantity,
                 "price_per_unit": price,
                 "subtotal": subtotal,
+                "size": variant.get("size"),
+                "color": product.get("color"),
+            
             }
         )
 
@@ -589,7 +592,7 @@ async def create_order(
             # 🎯 supplier details + product price
             p = (
                 supabase.table("products")
-                .select("product_id, brand_id, price, supplier_id, supplier_product_id")
+                .select("product_id, brand_id, price, color, supplier_id, supplier_product_id")
                 .eq("product_id", variant["product_id"])
                 .single()
                 .execute()
@@ -634,6 +637,9 @@ async def create_order(
                     "new_stock": variant["stock_quantity"] - qty,
                     "supplier_id": product["supplier_id"],
                     "supplier_product_id": product["supplier_product_id"],
+                    "size": variant.get("size"),
+                    "color": product.get("color"),
+                    
                 }
             )
 
@@ -643,6 +649,8 @@ async def create_order(
 
         # 2️⃣.5 APPLY COUPON (BACKEND AUTHORITY)
         coupon_data = None
+        coupon_offer = None
+
 
         if order.coupon_code:
             variant_ids = [item["variant_id"] for item in validated_items]
@@ -655,6 +663,9 @@ async def create_order(
                 }
             ).execute()
 
+            print("RPC RAW RESPONSE:", res)
+            print("RPC DATA:", res.data)
+
             if not res.data:
                 raise HTTPException(400, "Coupon validation failed")
 
@@ -662,13 +673,50 @@ async def create_order(
 
             if not coupon_data["valid"]:
                 raise HTTPException(400, coupon_data["message"])
-            
+
+            # 🔹 fetch offer_id using coupon_id
+            coupon_row = (
+                supabase
+                .table("coupons")
+                .select("offer_id")
+                .eq("coupon_id", coupon_data["coupon_id"])
+                .single()
+                .execute()
+            ).data
+
+            if not coupon_row:
+                raise HTTPException(400, "Coupon not found")
+
+            # 🔹 now fetch offer details
+            coupon_offer = (
+                supabase
+                .table("offers")
+                .select("offer_id, discount_type, discount_value")
+                .eq("offer_id", coupon_row["offer_id"])
+                .single()
+                .execute()
+            ).data
+
+            if not coupon_offer:
+                raise HTTPException(400, "Coupon offer not found")
+
 
         if coupon_data:
-            coupon_discount = round(pricing["total"] * 0.40, 2)  # example 40%
-            pricing["coupon_discount"] = coupon_discount
-            pricing["total"] -= coupon_discount
+            coupon_discount = 0.0
+            base_amount = pricing["total"]
 
+            if coupon_offer["discount_type"] == "percentage":
+                coupon_discount = base_amount * (coupon_offer["discount_value"] / 100)
+
+                # if coupon_offer.get("max_discount"):
+                #     coupon_discount = min(coupon_discount, coupon_offer["max_discount"])
+
+            elif coupon_offer["discount_type"] == "flat":
+                coupon_discount = coupon_offer["discount_value"]
+
+            coupon_discount = round(coupon_discount, 2)
+            pricing["coupon_discount"] = coupon_discount
+            pricing["total"] = round(base_amount - coupon_discount, 2)
 
 
         grand_total = pricing["total"]
@@ -785,6 +833,9 @@ async def create_order(
 
                     "supplier_id": item["supplier_id"],
                     "supplier_product_id": item["supplier_product_id"],
+
+                    "size": item["size"],
+                    "color": item["color"],
                 }
             )
 
@@ -1015,6 +1066,8 @@ async def verify_payment(
                 supabase.table("coupons").update(
                     {"used_count": supabase.literal("used_count + 1")}
                 ).eq("coupon_id", order_row["coupon_id"]).execute()
+
+                print(f"Coupon {order_row['coupon_id']} usage incremented")
 
         return {"status": "success", "message": "Payment verified and order confirmed"}
 
