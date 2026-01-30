@@ -23,7 +23,7 @@ from schemas import (
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
-    PaymentVerificationRequest, ReturnCreate, ReturnResponse, ReturnUpdate, Supplier,
+    PaymentVerificationRequest, ReturnCreate, ReturnResponse, ReturnStatusEnum, ReturnUpdate, Supplier,
     UserCreate, UserForgotPassword, UserResetPassword, UserResponse,
     Token,
 )
@@ -330,7 +330,6 @@ async def update_product(
 
 
 # --- Delivery Partner Endpoints ---
-
 @router.get("/delivery-partners", response_model=List[DeliveryPartner])
 async def get_delivery_partners(current_user: UserResponse = Depends(get_current_user)):
     try:
@@ -1666,3 +1665,22 @@ async def update_return_status(
 
     return result
 
+
+
+@router.get("/admin/returns", response_model=list[ReturnResponse])
+async def get_all_returns(
+    status: ReturnStatusEnum | None = None
+):
+    query = supabase.table("returns").select("*")
+
+    if status:
+        query = query.eq("status", status)
+
+    res = query.order("initiated_at", desc=True).execute()
+
+    # Convert to IST
+    for r in res.data:
+        r["initiated_at"] = to_ist(r["initiated_at"])
+        r["updated_at"] = to_ist(r["updated_at"])
+
+    return res.data
