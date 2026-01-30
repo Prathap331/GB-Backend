@@ -350,7 +350,7 @@ class PartnerResponse(PartnerCreate):
 
 
 class CouponGenerateRequest(BaseModel):
-    brand_code: str = Field(..., example="QDIO")
+    brand_code: Optional[str] = None
 
 class CouponGenerateResponse(BaseModel):
     coupon_code: str
