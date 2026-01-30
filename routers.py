@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
 from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from typing import List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import uuid
 from fastapi import Header, HTTPException
 import json
@@ -19,7 +19,7 @@ from services import (
     supabase_anon
 )
 from schemas import (
-    BrandResponse, CategoryResponse, CouponGenerateRequest, CouponGenerateResponse, CouponValidateRequest, CouponValidateResponse, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
+    BrandResponse, CategoryResponse, CouponGenerateRequest, CouponGenerateResponse, CouponValidateRequest, CouponValidateResponse, DeliveryStatusCreate, DeliveryStatusEnum, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
@@ -1599,7 +1599,7 @@ async def create_return(
             "product_id": payload.product_id,
             "product_name": product_name,
             "quantity": payload.quantity,
-            "return_type": payload.return_type,
+            "return_type": payload.return_type.value,
             "reason": payload.reason,
             "pickup_address": payload.pickup_address,
         }
@@ -1648,8 +1648,8 @@ async def update_return_status(
         supabase
         .table("returns")
         .update({
-            "status": payload.status,
-            "updated_at": "now()"
+            "status": payload.status.value,   
+            "updated_at": datetime.now(timezone.utc).isoformat()
         })
         .eq("return_id", return_id)
         .execute()
@@ -1674,7 +1674,7 @@ async def get_all_returns(
     query = supabase.table("returns").select("*")
 
     if status:
-        query = query.eq("status", status)
+        query = query.eq("status", status.value)
 
     res = query.order("initiated_at", desc=True).execute()
 
@@ -1684,3 +1684,50 @@ async def get_all_returns(
         r["updated_at"] = to_ist(r["updated_at"])
 
     return res.data
+
+
+
+
+now = datetime.now(timezone.utc)
+return_valid_till = now + timedelta(days=7)
+
+
+@router.post("/admin/orders/{order_id}/delivery-status")
+async def update_delivery_status(
+    order_id: int,
+    payload: DeliveryStatusCreate,
+):
+    # 1️⃣ Check order exists
+    order_res = (
+        supabase
+        .table("orders")
+        .select("order_id, delivery_date")
+        .eq("order_id", order_id)
+        .single()
+        .execute()
+    )
+
+    if not order_res.data:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # 2️⃣ Insert into delivery_status log
+    supabase.table("delivery_status").insert({
+        "order_id": order_id,
+        "delivery_partner_id": payload.delivery_partner_id,
+        "status": payload.status.value,   # IMPORTANT
+        "remarks": payload.remarks
+    }).execute()
+
+    # 3️⃣ If Delivered → update orders table
+    if payload.status == DeliveryStatusEnum.DELIVERED:
+        if order_res.data["delivery_date"] is None:
+            now = datetime.now(timezone.utc)
+            supabase.table("orders").update({
+                "delivery_date": now.isoformat(),
+                "return_valid_till": (now + timedelta(days=7)).isoformat()
+            }).eq("order_id", order_id).execute()
+
+    return {
+        "message": "Delivery status updated successfully",
+        "status": payload.status.value
+    }

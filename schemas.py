@@ -400,7 +400,7 @@ class ReturnCreate(BaseModel):
     return_type: ReturnTypeEnum
     reason: str
     pickup_address: str
-    
+
 class ReturnUpdate(BaseModel):
     status: ReturnStatusEnum    
 
@@ -418,3 +418,18 @@ class ReturnResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+    
+
+class DeliveryStatusEnum(str, Enum):
+    ASSIGNED = "Assigned"
+    PICKED_UP = "Picked Up"
+    OUT_FOR_DELIVERY = "Out for Delivery"
+    DELIVERED = "Delivered"
+    FAILED = "Failed"
+    RETURNED = "Returned"
+    
+class DeliveryStatusCreate(BaseModel):
+    status: DeliveryStatusEnum
+    delivery_partner_id: Optional[int] = None
+    remarks: Optional[str] = None
