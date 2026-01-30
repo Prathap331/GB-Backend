@@ -23,7 +23,7 @@ from schemas import (
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
-    PaymentVerificationRequest, Supplier,
+    PaymentVerificationRequest, ReturnCreate, ReturnResponse, ReturnUpdate, Supplier,
     UserCreate, UserForgotPassword, UserResetPassword, UserResponse,
     Token,
 )
@@ -340,123 +340,106 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-
+# --- Order Price Preview Endpoint ---
 @router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
 
     validated_items = []
 
     for item in order.items:
+        # 1️⃣ Resolve variant
+        variant = (
+            supabase.table("product_variants")
+            .select("variant_id, product_id, stock_quantity")
+            .eq("variant_id", item.variant_id)
+            .single()
+            .execute()
+        ).data
 
-        # 🛡 1️⃣ Ensure variant_id really belongs to this product
-        if item.variant_id:
-            check = (
-                supabase.table("product_variants")
-                .select("variant_id, product_id")
-                .eq("variant_id", item.variant_id)
-                .maybe_single()
-                .execute()
-            )
-
-            if not check.data or check.data["product_id"] != item.product_id:
-                item.variant_id = None  # force fallback
-
-
-        # 🔁 2️⃣ Resolve variant using product + size (✅ color removed)
-        if not item.variant_id or str(item.variant_id).lower() in ["", "none", "null"]:
-            v = (
-                supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity, size")
-                .eq("product_id", item.product_id)
-                .eq("size", item.size)
-                .maybe_single()
-                .execute()
-            )
-
-            if not v or not v.data:
-                raise HTTPException(
-                    400,
-                    f"No variant found for product {item.product_id} with size '{item.size}'"
-                )
-
-            variant = v.data
-            item.variant_id = variant["variant_id"]
-
-        else:
-            v = (
-                supabase.table("product_variants")
-                .select("variant_id, product_id, stock_quantity, size")
-                .eq("variant_id", item.variant_id)
-                .single()
-                .execute()
-            )
-            variant = v.data
-
-
-        # 📦 stock validation
         if variant["stock_quantity"] < item.quantity:
-            raise HTTPException(
-                400,
-                f"Not enough stock for variant {item.variant_id}"
-            )
+            raise HTTPException(400, "Insufficient stock")
 
-
-        # 🔎 3️⃣ Fetch product (brand + price)
-        p = (
+        # 2️⃣ Product
+        product = (
             supabase.table("products")
-            .select("product_id, brand_id, price, color")
+            .select("product_id, brand_id, price")
             .eq("product_id", variant["product_id"])
             .single()
             .execute()
-        )
+        ).data
 
-        product = p.data
+        subtotal = product["price"] * item.quantity
 
-        # ❗ ensure product has brand (required for offers)
-        if not product.get("brand_id"):
-            raise HTTPException(
-                400,
-                f"Product {variant['product_id']} has no brand assigned"
-            )
+        validated_items.append({
+            "variant_id": variant["variant_id"],
+            "product_id": product["product_id"],
+            "brand_id": product["brand_id"],
+            "quantity": item.quantity,
+            "price_per_unit": product["price"],
+            "subtotal": subtotal,
+        })
 
-        # 💰 use product price (canonical)
-        if product.get("price") is None:
-            raise HTTPException(
-                400,
-                f"Product {variant['product_id']} has no price set"
-            )
-
-        price = round(float(product["price"]), 2)
-
-        if price <= 0:
-            raise HTTPException(
-                400,
-                f"Product {variant['product_id']} has invalid price {price}"
-            )
-
-        subtotal = price * item.quantity
-
-        validated_items.append(
-            {
-                "variant_id": item.variant_id,
-                "product_id": variant["product_id"],
-                "brand_id": product["brand_id"],
-                "quantity": item.quantity,
-                "price_per_unit": price,
-                "subtotal": subtotal,
-                "size": variant.get("size"),
-                "color": product.get("color"),
-            
-            }
-        )
-
-    # ---------- 🧮 Calculate totals ----------
+    # ---------- BRAND OFFERS ----------
     pricing = calculate_order_pricing(order, validated_items)
+
+    # ---------- APPLY COUPON ----------
+    coupon_discount = 0.0
+
+    if order.coupon_code:
+        variant_ids = [i["variant_id"] for i in validated_items]
+
+        res = supabase.rpc(
+            "validate_coupon_for_cart",
+            {
+                "p_coupon_code": order.coupon_code,
+                "p_variant_ids": variant_ids,
+            }
+        ).execute()
+
+        if not res.data or not res.data[0]["valid"]:
+            raise HTTPException(400, res.data[0]["message"])
+
+        coupon_id = res.data[0]["coupon_id"]
+
+        # ✅ get offer_id from coupons table
+        offer_id = (
+            supabase.table("coupons")
+            .select("offer_id")
+            .eq("coupon_id", coupon_id)
+            .single()
+            .execute()
+        ).data["offer_id"]
+
+        offer = (
+            supabase.table("offers")
+            .select("discount_type, discount_value")
+            .eq("offer_id", offer_id)
+            .single()
+            .execute()
+        ).data
+
+        base_amount = pricing["total"]
+
+        if offer["discount_type"] == "percentage":
+            coupon_discount = round(
+                base_amount * (offer["discount_value"] / 100), 2
+            )
+        else:
+            coupon_discount = round(offer["discount_value"], 2)
+
+        pricing["coupon_discount"] = coupon_discount
+        pricing["total"] = round(base_amount - coupon_discount, 2)
+
+    # ---------- RETURN ----------
+    pricing["brand_discount"] = pricing.get("discount", 0)
+    pricing["coupon_discount"] = coupon_discount
+    pricing["total_discount"] = (
+        pricing["brand_discount"] + coupon_discount
+    )
+
     return pricing
 
-
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
-
 @router.post("/orders", response_model=Order)
 async def create_order(
     order: OrderCreate,
@@ -647,14 +630,16 @@ async def create_order(
         # 🔢 shared pricing (AFTER full loop)
         pricing = calculate_order_pricing(order, validated_items)
 
-        # 2️⃣.5 APPLY COUPON (BACKEND AUTHORITY)
+        # ===============================
+        # 🎟 APPLY COUPON (SINGLE SOURCE OF TRUTH)
+        # ===============================
         coupon_data = None
-        coupon_offer = None
-
+        coupon_discount = 0.0
 
         if order.coupon_code:
             variant_ids = [item["variant_id"] for item in validated_items]
 
+            # 1️⃣ Validate coupon
             res = supabase.rpc(
                 "validate_coupon_for_cart",
                 {
@@ -663,66 +648,48 @@ async def create_order(
                 }
             ).execute()
 
-            # print("RPC RAW RESPONSE:", res)
-            # print("RPC DATA:", res.data)
-
-            if not res.data:
-                raise HTTPException(400, "Coupon validation failed")
+            if not res.data or not res.data[0]["valid"]:
+                raise HTTPException(400, res.data[0]["message"])
 
             coupon_data = res.data[0]
 
-            if not coupon_data["valid"]:
-                raise HTTPException(400, coupon_data["message"])
-
-            # 🔹 fetch offer_id using coupon_id
+            # 2️⃣ Get offer_id from coupon
             coupon_row = (
-                supabase
-                .table("coupons")
+                supabase.table("coupons")
                 .select("offer_id")
                 .eq("coupon_id", coupon_data["coupon_id"])
                 .single()
                 .execute()
             ).data
 
-            if not coupon_row:
-                raise HTTPException(400, "Coupon not found")
-
-            # 🔹 now fetch offer details
-            coupon_offer = (
-                supabase
-                .table("offers")
-                .select("offer_id, discount_type, discount_value")
+            # 3️⃣ Fetch offer
+            offer = (
+                supabase.table("offers")
+                .select("discount_type, discount_value")
                 .eq("offer_id", coupon_row["offer_id"])
                 .single()
                 .execute()
             ).data
 
-            if not coupon_offer:
-                raise HTTPException(400, "Coupon offer not found")
-
-
-        if coupon_data:
-            coupon_discount = 0.0
+            # 4️⃣ Apply coupon on TOP of brand-discounted total
             base_amount = pricing["total"]
 
-            if coupon_offer["discount_type"] == "percentage":
-                coupon_discount = base_amount * (coupon_offer["discount_value"] / 100)
+            if offer["discount_type"] == "percentage":
+                coupon_discount = round(
+                    base_amount * (offer["discount_value"] / 100), 2
+                )
+            else:
+                coupon_discount = round(offer["discount_value"], 2)
 
-                # if coupon_offer.get("max_discount"):
-                #     coupon_discount = min(coupon_discount, coupon_offer["max_discount"])
-
-            elif coupon_offer["discount_type"] == "flat":
-                coupon_discount = coupon_offer["discount_value"]
-
-            coupon_discount = round(coupon_discount, 2)
             pricing["coupon_discount"] = coupon_discount
             pricing["total"] = round(base_amount - coupon_discount, 2)
 
-
+        # ---------- FINAL TOTALS ----------
         grand_total = pricing["total"]
         gst_amount = pricing["gst"]
         shipping_fee = pricing["shipping_fee"]
         cod_fee = pricing["cod_fee"]
+
 
         # 🔎 Map brand → applied offer info (used later while inserting order_items)
         brand_offer_map = {}
@@ -908,40 +875,126 @@ async def create_order(
     final_order.shipping_fee = shipping_fee
     final_order.gst_amount = gst_amount
     final_order.cod_fee = cod_fee
+    final_order.brand_discount = pricing.get("discount", 0)
+    final_order.coupon_discount = pricing.get("coupon_discount", 0)
+    final_order.total_discount = (
+        final_order.brand_discount + final_order.coupon_discount
+    )
+
 
     return final_order
-
 
 
 @router.get("/orders/me", response_model=List[Order])
 async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
     try:
-        # The query string here is critical. We ask for products explicitly.
-        res = supabase.table("orders").select("*, order_items(*, products(product_name,category, sub_category, images))").eq("user_id", str(current_user.id)).order("created_at", desc=True).execute()
-        
-        return [Order.model_validate(o) for o in res.data]
-    
+        orders_res = (
+            supabase
+            .table("orders")
+            .select(
+                "*, order_items(*, products(product_name,category,sub_category,images))"
+            )
+            .eq("user_id", str(current_user.id))
+            .order("created_at", desc=True)
+            .execute()
+        )
+
+        returns_res = (
+            supabase
+            .table("returns")
+            .select("order_id, product_id, status")
+            .eq("user_id", str(current_user.id))
+            .execute()
+        )
+
+        returns_map = {
+            (r["order_id"], r["product_id"]): r["status"]
+            for r in returns_res.data
+        }
+
+        now = datetime.now(timezone.utc)
+
+        for o in orders_res.data:
+            return_allowed = (
+                o.get("delivery_date")
+                and o.get("return_valid_till")
+                and now <= datetime.fromisoformat(o["return_valid_till"])
+            )
+
+            o["return_allowed"] = return_allowed
+
+            for item in o["order_items"]:
+                key = (o["order_id"], item["product_id"])
+
+                if key in returns_map:
+                    item["return_status"] = returns_map[key]
+                    item["return_eligible"] = False
+                else:
+                    item["return_status"] = None
+                    item["return_eligible"] = return_allowed
+
+        return orders_res.data
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/orders/me/{order_id}", response_model=Order)
-async def get_my_single_order(order_id: int, current_user: UserResponse = Depends(get_current_user)):
+async def get_my_single_order(
+    order_id: int,
+    current_user: UserResponse = Depends(get_current_user)
+):
     try:
-        '''
-        res = supabase.table("orders").select("*, order_items(*)").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
-        if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-        return res.data'''
-        # UPDATED QUERY: Fetch nested products(product_name, images)
-        res = supabase.table("orders").select("*, order_items(*, products(product_name,category,sub_category, images))").eq("user_id", str(current_user.id)).eq("order_id", order_id).single().execute()
-        if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-        
-       
-        return res.data
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        res = (
+            supabase
+            .table("orders")
+            .select(
+                """
+                *,
+                order_items(
+                    *,
+                    products(product_name,category,sub_category,images),
+                    returns(status)
+                )
+                """
+            )
+            .eq("user_id", str(current_user.id))
+            .eq("order_id", order_id)
+            .single()
+            .execute()
+        )
 
-# --- NEW: PAYMENT VERIFICATION ENDPOINT ---
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        o = res.data
+        now = datetime.now(timezone.utc)
+
+        return_allowed = (
+            o.get("delivery_date") is not None
+            and o.get("return_valid_till") is not None
+            and now <= datetime.fromisoformat(o["return_valid_till"])
+        )
+
+        for item in o["order_items"]:
+            if item.get("returns"):
+                item["return_status"] = item["returns"][0]["status"]
+                item["return_eligible"] = False
+            else:
+                item["return_status"] = None
+                item["return_eligible"] = return_allowed
+
+            item.pop("returns", None)
+
+        o["return_allowed"] = return_allowed
+
+        return o
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
 
 
 @router.put("/orders/{order_id}", response_model=Order)
@@ -1459,3 +1512,157 @@ async def validate_coupon(payload: CouponValidateRequest):
         }
 
     return resp.data[0]
+
+
+
+# to convert UTC to IST
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
+
+def to_ist(dt):
+    if dt is None:
+        return None
+    
+    if isinstance(dt, str):
+        # Handles "2026-01-30T09:50:53.338064Z"
+        dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+
+    return dt.astimezone(IST)
+
+
+
+@router.post("/returns", status_code=201)
+async def create_return(
+    payload: ReturnCreate,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    try:
+        # 1️⃣ Fetch order
+        order_res = (
+            supabase
+            .table("orders")
+            .select("order_id, user_id, delivery_date, return_valid_till")
+            .eq("order_id", payload.order_id)
+            .eq("user_id", str(current_user.id))
+            .single()
+            .execute()
+        )
+
+        if not order_res.data:
+            raise HTTPException(status_code=404, detail="Order not found")
+
+        order = order_res.data
+
+        # 2️⃣ Validate delivery & return window
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        if not order["delivery_date"]:
+            raise HTTPException(status_code=400, detail="Order not delivered yet")
+
+        if now > datetime.fromisoformat(order["return_valid_till"]):
+            raise HTTPException(status_code=400, detail="Return window expired")
+
+        # 3️⃣ Validate product belongs to order
+        item_res = (
+            supabase
+            .table("order_items")
+            .select("product_id, products(product_name)")
+            .eq("order_id", payload.order_id)
+            .eq("product_id", payload.product_id)
+            .single()
+            .execute()
+        )
+
+        if not item_res.data:
+            raise HTTPException(status_code=400, detail="Product not part of order")
+
+        product_name = item_res.data["products"]["product_name"]
+
+        # 4️⃣ Prevent duplicate return
+        existing = (
+            supabase
+            .table("returns")
+            .select("return_id")
+            .eq("order_id", payload.order_id)
+            .eq("product_id", payload.product_id)
+            .execute()
+        )
+
+        if existing.data:
+            raise HTTPException(status_code=400, detail="Return already requested")
+
+        # 5️⃣ Create return
+        insert_data = {
+            "order_id": payload.order_id,
+            "user_id": str(current_user.id),
+            "product_id": payload.product_id,
+            "product_name": product_name,
+            "quantity": payload.quantity,
+            "return_type": payload.return_type,
+            "reason": payload.reason,
+            "pickup_address": payload.pickup_address,
+        }
+
+        res = supabase.table("returns").insert(insert_data).execute()
+
+        return {
+            "message": "Return request created",
+            "return_id": res.data[0]["return_id"],
+            "status": res.data[0]["status"],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/returns", response_model=list[ReturnResponse])
+async def get_my_returns(
+    order_id: int,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    res = (
+        supabase
+        .table("returns")
+        .select("*")
+        .eq("order_id", order_id)
+        .eq("user_id", str(current_user.id))
+        .execute()
+    )
+
+    for r in res.data:
+        r["initiated_at"] = to_ist(r["initiated_at"])
+        r["updated_at"] = to_ist(r["updated_at"])
+
+    return res.data
+
+
+@router.patch("/admin/returns/{return_id}", response_model=ReturnResponse)
+async def update_return_status(
+    return_id: int,
+    payload: ReturnUpdate
+):
+    res = (
+        supabase
+        .table("returns")
+        .update({
+            "status": payload.status,
+            "updated_at": "now()"
+        })
+        .eq("return_id", return_id)
+        .execute()
+    )
+
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Return not found")
+
+    result = res.data[0]
+
+    result["initiated_at"] = to_ist(result["initiated_at"])
+    result["updated_at"] = to_ist(result["updated_at"])
+
+    return result
+
