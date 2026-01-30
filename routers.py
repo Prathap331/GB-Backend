@@ -1567,15 +1567,16 @@ async def create_return(
         item_res = (
             supabase
             .table("order_items")
-            .select("product_id, products(product_name)")
+            .select("variant_id, product_id, products(product_name)")
             .eq("order_id", payload.order_id)
-            .eq("product_id", payload.product_id)
+            .eq("variant_id", payload.variant_id)
             .single()
             .execute()
         )
 
         if not item_res.data:
-            raise HTTPException(status_code=400, detail="Product not part of order")
+            raise HTTPException(status_code=400, detail="Variant not part of order")
+
 
         product_name = item_res.data["products"]["product_name"]
 
@@ -1585,7 +1586,7 @@ async def create_return(
             .table("returns")
             .select("return_id")
             .eq("order_id", payload.order_id)
-            .eq("product_id", payload.product_id)
+            .eq("variant_id", payload.variant_id)
             .execute()
         )
 
@@ -1596,13 +1597,15 @@ async def create_return(
         insert_data = {
             "order_id": payload.order_id,
             "user_id": str(current_user.id),
-            "product_id": payload.product_id,
-            "product_name": product_name,
+            "product_id": item_res.data["product_id"],
+            "variant_id": payload.variant_id,
+            "product_name": item_res.data["products"]["product_name"],
             "quantity": payload.quantity,
             "return_type": payload.return_type.value,
             "reason": payload.reason,
             "pickup_address": payload.pickup_address,
         }
+
 
         res = supabase.table("returns").insert(insert_data).execute()
 

@@ -183,6 +183,8 @@ class Order(BaseModel):
     payment_method: str
     payment_status: str
     order_status: str
+    delivery_date: Optional[datetime] = None
+    return_valid_till: Optional[datetime] = None
     delivery_partner_id: Optional[int] = None
     delivery_address: str
     delivery_expected_date: Optional[datetime] = None
@@ -395,7 +397,8 @@ class ReturnStatusEnum(str, Enum):
 
 class ReturnCreate(BaseModel):
     order_id: int
-    product_id: int
+    variant_id: int
+    product_id: Optional[int] = None
     quantity: int = 1
     return_type: ReturnTypeEnum
     reason: str
@@ -428,7 +431,7 @@ class DeliveryStatusEnum(str, Enum):
     DELIVERED = "Delivered"
     FAILED = "Failed"
     RETURNED = "Returned"
-    
+
 class DeliveryStatusCreate(BaseModel):
     status: DeliveryStatusEnum
     delivery_partner_id: Optional[int] = None
