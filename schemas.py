@@ -180,6 +180,10 @@ class Order(BaseModel):
     cod_fee: float | None = None
     gst_amount: float | None = None
     total_amount: float
+    brand_discount: float | None = 0
+    coupon_discount: float | None = 0
+    total_discount: float | None = 0
+
     payment_method: str
     payment_status: str
     order_status: str

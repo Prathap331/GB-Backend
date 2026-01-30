@@ -339,7 +339,6 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
 
-# --- Order Price Preview Endpoint ---
 @router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
 
@@ -347,13 +346,21 @@ async def price_preview(order: OrderCreate):
 
     for item in order.items:
         # 1️⃣ Resolve variant
-        variant = (
-            supabase.table("product_variants")
-            .select("variant_id, product_id, stock_quantity")
-            .eq("variant_id", item.variant_id)
-            .single()
-            .execute()
-        ).data
+        if item.variant_id:
+            check = (
+                supabase.table("product_variants")
+                .select("variant_id, product_id, stock_quantity, size")
+                .eq("variant_id", item.variant_id)
+                .maybe_single()
+                .execute()
+            )
+
+            if not check.data:
+                raise HTTPException(400, "Invalid variant")
+
+            variant = check.data
+        else:
+            raise HTTPException(400, "variant_id required")
 
         if variant["stock_quantity"] < item.quantity:
             raise HTTPException(400, "Insufficient stock")
@@ -378,10 +385,12 @@ async def price_preview(order: OrderCreate):
             "subtotal": subtotal,
         })
 
-    # ---------- BRAND OFFERS ----------
+    # 🔢 BRAND OFFERS
     pricing = calculate_order_pricing(order, validated_items)
 
-    # ---------- APPLY COUPON ----------
+    # ===============================
+    # 🎟 APPLY COUPON (IMPORTANT PART)
+    # ===============================
     coupon_discount = 0.0
 
     if order.coupon_code:
@@ -398,45 +407,28 @@ async def price_preview(order: OrderCreate):
         if not res.data or not res.data[0]["valid"]:
             raise HTTPException(400, res.data[0]["message"])
 
-        coupon_id = res.data[0]["coupon_id"]
-
-        # ✅ get offer_id from coupons table
-        offer_id = (
-            supabase.table("coupons")
-            .select("offer_id")
-            .eq("coupon_id", coupon_id)
-            .single()
-            .execute()
-        ).data["offer_id"]
-
-        offer = (
+        coupon_offer = (
             supabase.table("offers")
             .select("discount_type, discount_value")
-            .eq("offer_id", offer_id)
+            .eq("offer_id", res.data[0]["coupon_id"])
             .single()
             .execute()
         ).data
 
         base_amount = pricing["total"]
 
-        if offer["discount_type"] == "percentage":
+        if coupon_offer["discount_type"] == "percentage":
             coupon_discount = round(
-                base_amount * (offer["discount_value"] / 100), 2
+                base_amount * (coupon_offer["discount_value"] / 100), 2
             )
         else:
-            coupon_discount = round(offer["discount_value"], 2)
+            coupon_discount = coupon_offer["discount_value"]
 
         pricing["coupon_discount"] = coupon_discount
         pricing["total"] = round(base_amount - coupon_discount, 2)
 
-    # ---------- RETURN ----------
-    pricing["brand_discount"] = pricing.get("discount", 0)
-    pricing["coupon_discount"] = coupon_discount
-    pricing["total_discount"] = (
-        pricing["brand_discount"] + coupon_discount
-    )
-
     return pricing
+
 
 # --- Order Endpoints (UPDATED WITH RAZORPAY) ---
 @router.post("/orders", response_model=Order)
