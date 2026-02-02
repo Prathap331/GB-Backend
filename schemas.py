@@ -7,6 +7,11 @@ from uuid import UUID
 from typing import Any, Optional,List, Dict
 from datetime import datetime, date
 from enum import Enum
+from pydantic import BaseModel
+
+#refresh schemas
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
 
 # Profile Schemas
 class ProfileBase(BaseModel):
