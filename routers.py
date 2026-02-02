@@ -23,7 +23,7 @@ from schemas import (
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
-    PaymentVerificationRequest, ReturnCreate, ReturnResponse, ReturnStatusEnum, ReturnUpdate, Supplier,
+    PaymentVerificationRequest, RefreshTokenRequest,ReturnCreate, ReturnResponse, ReturnStatusEnum, ReturnUpdate, Supplier,
     UserCreate, UserForgotPassword, UserResetPassword, UserResponse,
     Token,
 )
@@ -92,6 +92,23 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         )
     except:
         raise HTTPException(400, "Incorrect email or password")
+
+
+# -----------------------------
+# 🔁 REFRESH ACCESS TOKEN ROUTE
+# -----------------------------
+@router.post("/auth/refresh", response_model=Token)
+async def refresh_access_token(payload: RefreshTokenRequest):
+
+    refresh_token = payload.refresh_token
+
+    res = supabase.auth.refresh_session(refresh_token)
+
+    return Token(
+        access_token=res.session.access_token,
+        refresh_token=res.session.refresh_token,
+        token_type="bearer"
+    )
 
 
 @router.get("/auth/me", response_model=UserResponse)
@@ -205,9 +222,11 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print("PROFILE ERROR:", traceback.format_exc())
+        if "JWT expired" in str(e):
+            raise HTTPException(status_code=401, detail="JWT expired")
+
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.put("/profiles/me", response_model=Profile)
@@ -239,9 +258,11 @@ async def update_my_profile(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print("PROFILE UPDATE ERROR:", traceback.format_exc())
+        if "JWT expired" in str(e):
+            raise HTTPException(status_code=401, detail="JWT expired")
+
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- Product Endpoints ---
 
