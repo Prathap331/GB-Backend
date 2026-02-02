@@ -261,10 +261,10 @@ async def update_my_profile(
     except HTTPException:
         raise
     except Exception as e:
-    if "JWT expired" in str(e):
-        raise HTTPException(status_code=401, detail="JWT expired")
+        if "JWT expired" in str(e):
+            raise HTTPException(status_code=401, detail="JWT expired")
 
-    raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Product Endpoints ---
