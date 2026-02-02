@@ -225,10 +225,10 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
     except HTTPException:
         raise
     except Exception as e:
-    if "JWT expired" in str(e):
-        raise HTTPException(status_code=401, detail="JWT expired")
+        if "JWT expired" in str(e):
+            raise HTTPException(status_code=401, detail="JWT expired")
 
-    raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 
