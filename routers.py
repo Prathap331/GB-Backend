@@ -157,9 +157,6 @@ async def reset_password(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-
-
-
 # --- Profile Endpoints ---
 @router.get("/profiles/me", response_model=Profile)
 async def get_my_profile(current_user: UserResponse = Depends(get_current_user)):
@@ -359,6 +356,7 @@ async def get_delivery_partners(current_user: UserResponse = Depends(get_current
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
+
 @router.post("/orders/price-preview")
 async def price_preview(order: OrderCreate):
 
@@ -398,10 +396,13 @@ async def price_preview(order: OrderCreate):
             "subtotal": subtotal,
         })
 
+
+    has_coupon = bool(order.coupon_code)
+
     # ---------------------------------
     # 2️⃣ Apply BRAND offers
     # ---------------------------------
-    pricing = calculate_order_pricing(order, validated_items)
+    pricing = calculate_order_pricing(order, validated_items, skip_brand_offers=has_coupon)
 
     coupon_discount = 0.0
 
@@ -443,7 +444,8 @@ async def price_preview(order: OrderCreate):
             .execute()
         ).data
 
-        base_amount = pricing["total"]
+        base_amount = pricing["subtotal"] - pricing["discount"]
+
 
         if offer["discount_type"] == "percentage":
             coupon_discount = round(
@@ -453,8 +455,8 @@ async def price_preview(order: OrderCreate):
             coupon_discount = round(offer["discount_value"], 2)
 
         pricing["coupon_discount"] = coupon_discount
-        pricing["brand_discount"] = pricing["discount"]
-        pricing["total_discount"] = pricing["brand_discount"] + coupon_discount
+        pricing["brand_discount"] = 0.0
+        pricing["total_discount"] = coupon_discount
         pricing["total"] = round(base_amount - coupon_discount, 2)
 
     return pricing
@@ -646,10 +648,13 @@ async def create_order(
                     
                 }
             )
+        
+
+        has_coupon = bool(order.coupon_code)
 
 
         # 🔢 shared pricing (AFTER full loop)
-        pricing = calculate_order_pricing(order, validated_items)
+        pricing = calculate_order_pricing(order, validated_items, skip_brand_offers=has_coupon)
 
         # ===============================
         # 🎟 APPLY COUPON (SINGLE SOURCE OF TRUTH)
@@ -693,7 +698,8 @@ async def create_order(
             ).data
 
             # 4️⃣ Apply coupon on TOP of brand-discounted total
-            base_amount = pricing["total"]
+            base_amount = pricing["subtotal"] - pricing["discount"]
+
 
             if offer["discount_type"] == "percentage":
                 coupon_discount = round(

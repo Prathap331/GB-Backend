@@ -14,7 +14,7 @@ import textwrap
 
 
 
-def calculate_order_pricing(order, validated_items):
+def calculate_order_pricing(order, validated_items, skip_brand_offers=False):
     """
     Brand-wise pricing with DB-driven tier offers.
     Used by both price-preview and order creation.
@@ -40,42 +40,44 @@ def calculate_order_pricing(order, validated_items):
     total_discount = 0.0
     now = datetime.now(timezone.utc).isoformat()
 
-    # 2️⃣ apply best offer per brand (USING VIEW – STABLE)
-    for brand_id, data in brand_map.items():
 
-        offer_res = (
-            supabase
-            .table("brand_offer_active_view")
-            .select("""
-                offer_id,
-                discount_type,
-                discount_value,
-                min_quantity
-            """)
-            .eq("brand_id", brand_id)
-            .lte("min_quantity", data["quantity"])
-            .execute()
-        )
-
-        if not offer_res.data:
-            continue
-
-        # pick best tier (highest discount)
-        best_offer = max(
-            offer_res.data,
-            key=lambda o: o["discount_value"]
-        )
-
-        if best_offer["discount_type"] == "percentage":
-            discount = round(
-                data["subtotal"] * (best_offer["discount_value"] / 100), 2
+    # apply brand offers ONLY if no coupon
+    if not skip_brand_offers:
+        for brand_id, data in brand_map.items():
+   
+            offer_res = (
+                supabase
+                .table("brand_offer_active_view")
+                .select("""
+                    offer_id,
+                    discount_type,
+                    discount_value,
+                    min_quantity
+                """)
+                .eq("brand_id", brand_id)
+                .lte("min_quantity", data["quantity"])
+                .execute()
             )
-        else:
-            discount = round(best_offer["discount_value"], 2)
 
-        data["discount"] = discount
-        data["offer"] = best_offer
-        total_discount += discount
+            if not offer_res.data:
+                continue
+
+            # pick best tier (highest discount)
+            best_offer = max(
+                offer_res.data,
+                key=lambda o: o["discount_value"]
+            )
+
+            if best_offer["discount_type"] == "percentage":
+                discount = round(
+                    data["subtotal"] * (best_offer["discount_value"] / 100), 2
+                )
+            else:
+                discount = round(best_offer["discount_value"], 2)
+
+            data["discount"] = discount
+            data["offer"] = best_offer
+            total_discount += discount
 
 
     # 3️⃣ final totals
