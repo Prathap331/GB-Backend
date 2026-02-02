@@ -240,9 +240,11 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print("PROFILE ERROR:", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+    if "JWT expired" in str(e):
+        raise HTTPException(status_code=401, detail="JWT expired")
+
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 
 @router.put("/profiles/me", response_model=Profile)
@@ -274,9 +276,11 @@ async def update_my_profile(
     except HTTPException:
         raise
     except Exception as e:
-        import traceback
-        print("PROFILE UPDATE ERROR:", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=str(e))
+    if "JWT expired" in str(e):
+        raise HTTPException(status_code=401, detail="JWT expired")
+
+    raise HTTPException(status_code=500, detail=str(e))
+
 
 # --- Product Endpoints ---
 
