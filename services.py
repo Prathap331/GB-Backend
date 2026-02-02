@@ -54,12 +54,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserResponse:
         )
 
     except Exception as e:
-    msg = str(e)
+        msg = str(e)
 
-    if "JWT expired" in msg or "PGRST303" in msg:
-        raise HTTPException(status_code=401, detail="JWT expired")
+        if "JWT expired" in msg or "PGRST303" in msg:
+            raise HTTPException(status_code=401, detail="JWT expired")
 
-    raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=401, detail="Invalid token")
 
 
 
