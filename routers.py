@@ -65,7 +65,7 @@ async def signup(user: UserCreate):
         if res.user:
             profile_check = supabase.table("profiles").select("id").eq("id", res.user.id).execute()
 
-            if not profile_check.data:
+            if  profile_check.data:
                 raise HTTPException(status_code=409, detail="Account already exists. Please login instead.")
 
             return UserResponse(id=res.user.id, email=res.user.email, created_at=res.user.created_at)
@@ -164,16 +164,21 @@ async def reset_password(
 @router.get("/profiles/me", response_model=Profile)
 async def get_my_profile(current_user: UserResponse = Depends(get_current_user)):
     try:
-        # READ as the user (RLS enforced)
+        # 🔐 Create user-scoped Supabase client (RLS enforced)
+        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        client.postgrest.auth(current_user.token)
+
+        # READ profile as logged-in user
         res = (
-            supabase.table("profiles")
+            client
+            .table("profiles")
             .select("*")
             .eq("id", str(current_user.id))
             .maybe_single()
             .execute()
         )
 
-        # --- AUTO CREATE PROFILE FOR GOOGLE USERS ---
+        # --- AUTO CREATE PROFILE (Google / first login users) ---
         if not res or not res.data:
             profile = {
                 "id": str(current_user.id),
@@ -194,9 +199,9 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
                 "updated_at": datetime.utcnow().isoformat(),
             }
 
-            insert_res = supabase.table("profiles").insert(profile).execute()
+            insert_res = client.table("profiles").insert(profile).execute()
             return insert_res.data[0]
-        # -------------------------------------------
+        # -------------------------------------------------------
 
         return res.data
 
@@ -208,22 +213,38 @@ async def get_my_profile(current_user: UserResponse = Depends(get_current_user))
         raise HTTPException(status_code=500, detail=str(e))
 
 
-
-
-
-
 @router.put("/profiles/me", response_model=Profile)
-async def update_my_profile(profile: ProfileBase, current_user: UserResponse = Depends(get_current_user)):
+async def update_my_profile(
+    profile: ProfileBase,
+    current_user: UserResponse = Depends(get_current_user)
+):
     try:
+        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        client.postgrest.auth(current_user.token)
+
         update_data = profile.model_dump(exclude_unset=True)
-        if not update_data: raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
-        update_data["updated_at"] = datetime.now().isoformat()
-        supabase_anon.postgrest.auth(current_user.token)
-        res = supabase_anon.table("profiles").update(update_data).eq("id", str(current_user.id)).execute()
-        if not res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found or update failed")
+        if not update_data:
+            raise HTTPException(400, "No update data provided")
+
+        res = (
+            client
+            .table("profiles")
+            .update(update_data)
+            .eq("id", str(current_user.id))
+            .execute()
+        )
+
+        if not res.data:
+            raise HTTPException(404, "Profile update failed")
+
         return res.data[0]
+
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        import traceback
+        print("PROFILE UPDATE ERROR:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 # --- Product Endpoints ---
 
@@ -1347,7 +1368,6 @@ def get_all_partner_applications():
     return res.data
 
 
-
 @router.post("/partners/coupon", response_model=CouponGenerateResponse)
 async def generate_coupon(
     payload: CouponGenerateRequest,
@@ -1355,8 +1375,9 @@ async def generate_coupon(
 ):
     # 1️⃣ Resolve partner (DD)
     partner_resp = (
-        supabase.table("partners")
-        .select("partner_id, partner_code, full_name")
+        supabase
+        .table("partners")
+        .select("partner_id, full_name")
         .eq("email_id", user.email)
         .maybe_single()
         .execute()
@@ -1367,27 +1388,41 @@ async def generate_coupon(
 
     partner = partner_resp.data
     partner_id = partner["partner_id"]
-    partner_name = partner["full_name"]
-    dd_prefix = partner_name.strip().upper()[:4]   
+    dd_prefix = partner["full_name"].strip().upper()[:4]
 
-    # ------------------------------------------------
-    # 2️⃣ Decide: UNIVERSAL vs BRAND-SPECIFIC
-    # ------------------------------------------------
+    # 2️⃣ Decide UNIVERSAL vs BRAND
     is_universal = (
         payload.brand_code is None
         or payload.brand_code.strip().upper() == "QDIO"
     )
 
-    brand_id = None
-    brand_name = "All Brands"
-    brand_code = "QDIO"
+    # ------------------------------------------------
+    # UNIVERSAL COUPON (QDIO)
+    # ------------------------------------------------
+    if is_universal:
+        brand_resp = (
+            supabase
+            .table("brands")
+            .select("brand_id")
+            .eq("brand_code", "QDIO")
+            .maybe_single()
+            .execute()
+        )
+
+        if not brand_resp or not brand_resp.data:
+            raise HTTPException(status_code=500, detail="QDIO  brand not configured")
+
+        brand_id = brand_resp.data["brand_id"]
+        brand_name = "All Brands"
+        brand_code = "QDIO"
 
     # ------------------------------------------------
-    # 3️⃣ BRAND-SPECIFIC COUPON FLOW
+    # BRAND-SPECIFIC COUPON
     # ------------------------------------------------
-    if not is_universal:
+    else:
         brand_resp = (
-            supabase.table("brands")
+            supabase
+            .table("brands")
             .select("brand_id, brand_name, brand_code")
             .eq("brand_code", payload.brand_code.upper())
             .maybe_single()
@@ -1402,70 +1437,77 @@ async def generate_coupon(
         brand_name = brand["brand_name"]
         brand_code = brand["brand_code"]
 
-        # Get active BRAND offer (from view)
-        offer_resp = (
-            supabase.table("brand_offer_active_view")
-            .select("offer_id, offer_name, discount_type, discount_value")
-            .eq("brand_id", brand_id)
-            .maybe_single()
-            .execute()
-        )
-
-        if not offer_resp or not offer_resp.data:
-            raise HTTPException(status_code=400, detail="No active offer for this brand")
-
-        offer = offer_resp.data
-
-        # 👉 BRAND coupon code format
-        # EX: TBHASIY30
-        coupon_code = f"{brand_code}{dd_prefix}{int(offer['discount_value'])}"
-
     # ------------------------------------------------
-    # 4️⃣ UNIVERSAL COUPON FLOW
-    # ------------------------------------------------
-    else:
-        offer_resp = (
-            supabase.table("offers")
-            .select("offer_id, offer_name, discount_type, discount_value")
-            .eq("is_active", True)
-            .eq("offer_type", "coupon")      # 🔥 IMPORTANT
-            .lte("min_quantity", 1)
-            .order("discount_value", desc=True)
-            .limit(1)
-            .maybe_single()
-            .execute()
-        )
-
-        if not offer_resp or not offer_resp.data:
-            raise HTTPException(status_code=400, detail="No active universal coupon offer")
-
-        offer = offer_resp.data
-
-        # 👉 UNIVERSAL coupon code format
-        # EX: QDIOASIY20
-        coupon_code = f"QDIO{dd_prefix}{int(offer['discount_value'])}"
-
-    # ------------------------------------------------
-    # 5️⃣ Prevent duplicate coupon (per DD + brand/universal)
+    # 3️⃣ Check existing coupon FIRST
     # ------------------------------------------------
     existing_resp = (
-        supabase.table("coupons")
+        supabase
+        .table("coupons")
         .select("*")
         .eq("partner_id", partner_id)
-        .is_("brand_id", brand_id)   # NULL = universal
+        .eq("brand_id", brand_id)
         .maybe_single()
         .execute()
     )
 
     if existing_resp and existing_resp.data:
         coupon = existing_resp.data
+
+        offer = (
+            supabase
+            .table("offers")
+            .select("offer_name, discount_type, discount_value")
+            .eq("offer_id", coupon["offer_id"])
+            .single()
+            .execute()
+        ).data
+
     else:
+        # ------------------------------------------------
+        # 4️⃣ Resolve OFFER
+        # ------------------------------------------------
+        if is_universal:
+            offer_resp = (
+                supabase
+                .table("offers")
+                .select("offer_id, offer_name, discount_type, discount_value")
+                .eq("is_active", True)
+                .eq("offer_type", "coupon")
+                .lte("min_quantity", 1)
+                .order("discount_value", desc=True)
+                .limit(1)
+                .maybe_single()
+                .execute()
+            )
+        else:
+            offer_resp = (
+                supabase
+                .table("brand_offer_active_view")
+                .select("offer_id, offer_name, discount_type, discount_value")
+                .eq("brand_id", brand_id)
+                .maybe_single()
+                .execute()
+            )
+
+        if not offer_resp or not offer_resp.data:
+            raise HTTPException(status_code=400, detail="No active offer available")
+
+        offer = offer_resp.data
+
+        coupon_code = (
+            f"QDIO{dd_prefix}{int(offer['discount_value'])}"
+            if is_universal
+            else f"{brand_code}{dd_prefix}{int(offer['discount_value'])}"
+        )
+
+
         insert_resp = (
-            supabase.table("coupons")
+            supabase
+            .table("coupons")
             .insert({
                 "coupon_code": coupon_code,
                 "partner_id": partner_id,
-                "brand_id": brand_id,        # NULL for universal
+                "brand_id": brand_id,
                 "offer_id": offer["offer_id"],
             })
             .execute()
@@ -1477,7 +1519,7 @@ async def generate_coupon(
         coupon = insert_resp.data[0]
 
     # ------------------------------------------------
-    # 6️⃣ RESPONSE
+    # 5️⃣ RESPONSE
     # ------------------------------------------------
     return {
         "coupon_code": coupon["coupon_code"],
