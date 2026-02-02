@@ -23,7 +23,7 @@ from schemas import (
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
-    PaymentVerificationRequest, ReturnCreate, ReturnResponse, ReturnStatusEnum, ReturnUpdate, Supplier,
+    PaymentVerificationRequest, RefreshTokenRequest,ReturnCreate, ReturnResponse, ReturnStatusEnum, ReturnUpdate, Supplier,
     UserCreate, UserForgotPassword, UserResetPassword, UserResponse,
     Token,
 )
@@ -98,32 +98,17 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 # 🔁 REFRESH ACCESS TOKEN ROUTE
 # -----------------------------
 @router.post("/auth/refresh", response_model=Token)
-async def refresh_access_token(payload: dict):
-    """
-    Refresh Supabase access token using refresh_token.
-    Called automatically by frontend when JWT expires.
-    """
+async def refresh_access_token(payload: RefreshTokenRequest):
 
-    refresh_token = payload.get("refresh_token")
+    refresh_token = payload.refresh_token
 
-    if not refresh_token:
-        raise HTTPException(status_code=400, detail="Refresh token required")
+    res = supabase.auth.refresh_session(refresh_token)
 
-    try:
-        # ✅ Supabase refresh session
-        res = supabase.auth.refresh_session(refresh_token)
-
-        if not res or not res.session:
-            raise HTTPException(status_code=401, detail="Session refresh failed")
-
-        return Token(
-            access_token=res.session.access_token,
-            refresh_token=res.session.refresh_token,
-            token_type="bearer"
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=401, detail=f"Refresh failed: {str(e)}")
+    return Token(
+        access_token=res.session.access_token,
+        refresh_token=res.session.refresh_token,
+        token_type="bearer"
+    )
 
 
 @router.get("/auth/me", response_model=UserResponse)
