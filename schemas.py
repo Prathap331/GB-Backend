@@ -185,7 +185,7 @@ class Order(BaseModel):
     cod_fee: float | None = None
     gst_amount: float | None = None
     total_amount: float
-    brand_discount: float | None = 0
+
     coupon_discount: float | None = 0
     total_discount: float | None = 0
 
@@ -359,35 +359,8 @@ class PartnerResponse(PartnerCreate):
     partner_id: UUID
     created_at: datetime
 
-
-class CouponGenerateRequest(BaseModel):
-    brand_code: Optional[str] = None
-
-class CouponGenerateResponse(BaseModel):
-    coupon_code: str
-    brand_name: str
-    brand_code: str
-    offer_name: str
-    discount_type: str
-    discount_value: float
-    used_count: int
-
-
 class CartItem(BaseModel):
     variant_id: int
-
-class CouponValidateRequest(BaseModel):
-    coupon_code: str
-    cart_items: List[CartItem]
-
-class CouponValidateResponse(BaseModel):
-    valid: bool
-    coupon_id: Optional[str]= None
-    partner_id: Optional[str]= None
-    message: str
-
-
-
 
 class ReturnTypeEnum(str, Enum):
     RETURN = "RETURN"
@@ -420,6 +393,7 @@ class ReturnResponse(BaseModel):
     return_id: int
     order_id: int
     product_id: int
+    variant_id: int
     quantity: int
     return_type: ReturnTypeEnum
     reason: str
@@ -445,3 +419,48 @@ class DeliveryStatusCreate(BaseModel):
     status: DeliveryStatusEnum
     delivery_partner_id: Optional[int] = None
     remarks: Optional[str] = None
+
+
+
+class CouponBase(BaseModel):
+    coupon_code: str = Field(..., example="TBH20")
+
+    offer_by: str = Field(..., example="direct")  
+    # direct | partner
+
+    offer_scope: str = Field(..., example="brand")
+    # universal | brand | product
+
+    discount_type: str = Field(..., example="percentage")
+    # percentage | flat
+
+    discount_value: float = Field(..., example=20)
+
+    min_quantity: int = Field(1, example=2)
+
+    start_date: datetime
+    end_date: datetime
+
+    is_active: bool = True
+
+
+class CouponCreate(CouponBase):
+    partner_id: Optional[UUID] = None
+    brand_code: Optional[str] = None
+    product_id: Optional[UUID] = None
+
+
+class CouponResponse(CouponBase):
+    coupon_id: UUID
+    partner_id: Optional[UUID]
+    brand_id: Optional[UUID]
+    product_id: Optional[UUID]
+    used_count: int
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+    
+class PartnerCouponGenerateRequest(BaseModel):
+    brand_code: Optional[str] = None  # None = universal (QDIO)
