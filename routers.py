@@ -20,7 +20,7 @@ from services import (
     supabase_anon
 )
 from schemas import (
-    BrandResponse, CategoryResponse, CouponCreate, DeliveryStatusCreate, DeliveryStatusEnum, PartnerCouponGenerateRequest, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
+    AdminCouponCreateRequest, BrandResponse, CategoryResponse, DeliveryStatusCreate, DeliveryStatusEnum, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
@@ -449,28 +449,32 @@ async def price_preview(order: OrderCreate):
     # 3️⃣ COUPON VALIDATION & APPLY
     # ---------------------------------
     if order.coupon_code:
-        coupon = (
+        coupon_res = (
             supabase.table("coupons")
             .select("""
                 coupon_id,
-                offer_by,
                 offer_scope,
                 brand_id,
+                partner_id,
                 discount_type,
                 discount_value,
                 min_quantity,
                 start_date,
                 end_date,
-                is_active
+                is_active,
+                used_count
             """)
             .eq("coupon_code", order.coupon_code.upper())
             .eq("is_active", True)
-            .single()
+            .maybe_single()
             .execute()
-        ).data
+        )
+        # print("Coupon fetch result:", coupon_res)
 
-        if not coupon:
-            raise HTTPException(400, "Invalid coupon")
+        if not coupon_res or not coupon_res.data:
+            raise HTTPException(400, "Invalid or inactive coupon")
+            
+        coupon = coupon_res.data
         
         now = datetime.now(timezone.utc)
 
@@ -612,26 +616,38 @@ async def create_order(
         subtotal = 0.0
 
         for item in order.items:
-            v = (
+            variant_res = (
                 supabase.table("product_variants")
                 .select("variant_id, product_id, stock_quantity, size")
                 .eq("variant_id", item.variant_id)
-                .single()
+                .maybe_single()
                 .execute()
-            ).data
+            )
+
+            if not variant_res or not variant_res.data:
+                raise HTTPException(400, "Invalid variant")
+
+            v = variant_res.data
+
 
             if v["stock_quantity"] < item.quantity:
                 raise HTTPException(
                     400, f"Insufficient stock for size {v['size']}"
                 )
 
-            p = (
+            product_res = (
                 supabase.table("products")
                 .select("product_id, brand_id, price, supplier_id, supplier_product_id, color")
                 .eq("product_id", v["product_id"])
-                .single()
+                .maybe_single()
                 .execute()
-            ).data
+            )
+
+            if not product_res or not product_res.data:
+                raise HTTPException(400, "Invalid product")
+
+            p = product_res.data
+
 
             price_per_unit = float(p["price"])
             line_total = price_per_unit * item.quantity
@@ -687,12 +703,13 @@ async def create_order(
             .execute()
         )
         # print("Coupon fetch result:", coupon_res)
-        coupon = coupon_res.data
 
-        if not coupon:
+
+        if not coupon_res or not coupon_res.data:
             raise HTTPException(400, "Invalid or inactive coupon")
-
         
+        coupon = coupon_res.data    
+
         now = datetime.now(timezone.utc)
 
         start_date = datetime.fromisoformat(coupon["start_date"])
@@ -849,15 +866,19 @@ async def create_order(
 
 
     # 10. RETURN FINAL ORDER
-    full_order = (
+    order_res = (
         supabase.table("orders")
         .select("*, order_items(*, products(product_name, category, sub_category, images))")
         .eq("order_id", new_order_id)
-        .single()
+        .maybe_single()
         .execute()
     )
 
-    final_order = Order.model_validate(full_order.data)
+    if not order_res or not order_res.data:
+        raise HTTPException(500, "Order fetch failed")
+
+    final_order = Order.model_validate(order_res.data)
+
 
     if razorpay_order_id:
         final_order.razorpay_order_id = razorpay_order_id
@@ -949,11 +970,11 @@ async def get_my_single_order(
             )
             .eq("user_id", str(current_user.id))
             .eq("order_id", order_id)
-            .single()
+            .maybe_single()
             .execute()
         )
 
-        if not res.data:
+        if not res or not res.data:
             raise HTTPException(status_code=404, detail="Order not found")
 
         o = res.data
@@ -1335,179 +1356,120 @@ def get_all_partner_applications():
     res = supabase.table("partners").select("*").order("created_at", desc=True).execute()
     return res.data
 
-
-
-@router.post("/partners/coupons/generate")
-async def generate_dd_coupon(
-    payload: PartnerCouponGenerateRequest,
-    user: UserResponse = Depends(get_current_user)
-):
-    """
-    DD generates coupon.
-    Discounts are system-controlled.
-    """
-
-    try:
-        # 1️⃣ Resolve partner
-        partner = (
-            supabase.table("partners")
-            .select("partner_id, full_name")
-            .eq("email_id", user.email)
-            .maybe_single()
-            .execute()
-        ).data
-
-        if not partner:
-            raise HTTPException(403, "Not a registered partner")
-
-        partner_id = partner["partner_id"]
-        dd_code = partner["full_name"].upper().replace(" ", "")[:4]
-
-        # 2️⃣ Brand logic
-        brand_code = payload.brand_code.upper() if payload.brand_code else "QDIO"
-
-        if brand_code not in COUPON_RULES:
-            raise HTTPException(
-                400,
-                f"Invalid brand code. Available brands: {list(COUPON_RULES.keys())}"
-            )
-
-        rule = COUPON_RULES[brand_code]
-
-        if not rule["is_active"]:
-            raise HTTPException(
-                400,
-                f"No active offers for brand {brand_code}"
-            )
-
-        brand_id = None
-        scope = "universal"
-
-        if brand_code != "QDIO":
-            brand = (
-                supabase.table("brands")
-                .select("brand_id")
-                .eq("brand_code", brand_code)
-                .maybe_single()
-                .execute()
-            ).data
-
-            if not brand:
-                raise HTTPException(
-                    400,
-                    f"Brand {brand_code} not found or inactive"
-                )
-
-            brand_id = brand["brand_id"]
-            scope = "brand"
-
-        # 3️⃣ Generate coupon code
-        coupon_code = f"{brand_code}{dd_code}{rule['discount_value']}"
-
-        # 4️⃣ Insert coupon
-        supabase.table("coupons").insert({
-            "coupon_code": coupon_code,
-            "offer_scope": scope,
-            "brand_id": brand_id,
-            "partner_id": partner_id,
-            "discount_type": rule["discount_type"],
-            "discount_value": rule["discount_value"],
-            "min_quantity": rule["min_quantity"],
-            "start_date": datetime.now(timezone.utc).isoformat(),
-            "end_date": (datetime.now(timezone.utc) + timedelta(days=rule["valid_days"])).isoformat(),
-            "is_active": True,
-        }).execute()
-
-        return {
-            "status": "success",
-            "coupon_code": coupon_code,
-            "discount_type": rule["discount_type"],
-            "discount_value": rule["discount_value"],
-            "valid_days": rule["valid_days"],
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Coupon generation failed: {e}")
-
-
-# @router.post("/coupons/validate", response_model=CouponValidateResponse)
-# async def validate_coupon(payload: CouponValidateRequest):
-#     variant_ids = [item.variant_id for item in payload.cart_items]
-
-#     resp = supabase.rpc(
-#         "validate_coupon_for_cart",
-#         {
-#             "p_coupon_code": payload.coupon_code,
-#             "p_variant_ids": variant_ids,
-#         }
-#     ).execute()
-
-#     if not resp or not resp.data:
-#         return {
-#             "valid": False,
-#             "coupon_id": "",
-#             "partner_id": "",
-#             "message": "Validation failed",
-#         }
-
-#     return resp.data[0]
-
-
 @router.post("/admin/coupons")
-async def create_coupon_admin(payload: CouponCreate):
-    """
-    Create direct website coupons (no DD)
-     
-    """
-
+async def create_coupon_admin(payload: AdminCouponCreateRequest):
     try:
-        # 1️⃣ Resolve brand logic
+        # =====================================================
+        # 1️⃣ Resolve BRAND
+        # =====================================================
         brand_id = None
-        offer_scope = "universal"
+        brand_code = "QDIO"   # default for universal
 
-        if payload.brand_code:
-            brand = (
-                supabase.table("brands")
-                .select("brand_id")
+        if payload.offer_scope == "brand":
+            if not payload.brand_code:
+                raise HTTPException(400, "brand_code required for brand coupons")
+
+            brand_res = (
+                supabase
+                .table("brands")
+                .select("brand_id, brand_code")
                 .eq("brand_code", payload.brand_code.upper())
                 .maybe_single()
                 .execute()
-            ).data
+            )
 
-            if not brand:
-                raise HTTPException(400, "Invalid brand code")
+            if not brand_res or not brand_res.data:
+                raise HTTPException(400, "Invalid brand_code")
 
-            brand_id = brand["brand_id"]
-            offer_scope = "brand"
+            brand_id = brand_res.data["brand_id"]
+            brand_code = brand_res.data["brand_code"]
 
-        # 2️⃣ Insert coupon (NO coupon rules here)
-        supabase.table("coupons").insert({
-            "coupon_code": payload.coupon_code.upper(),
+        # =====================================================
+        # 2️⃣ Resolve PARTNER (only if partner coupon)
+        # =====================================================
+        partner_id = None
+        partner_code = ""
+
+        if payload.offer_by == "partner":
+            if not payload.partner_id:
+                raise HTTPException(400, "partner_id required for partner coupons")
+
+            partner_res = (
+                supabase
+                .table("partners")
+                .select("partner_id, full_name")
+                .eq("partner_id", str(payload.partner_id))
+                .maybe_single()
+                .execute()
+            )
+
+            if not partner_res or not partner_res.data:
+                raise HTTPException(400, "Invalid partner_id")
+
+            partner_id = partner_res.data["partner_id"]
+            partner_code = (
+                partner_res.data["full_name"]
+                .replace(" ", "")
+                .upper()[:4]
+            )
+
+        # =====================================================
+        # 3️⃣ GENERATE COUPON CODE (AUTO ONLY)
+        # =====================================================
+        # Examples:
+        # QDIO10
+        # GB20
+        # QDIOASIY10
+        # GBASIY10
+        coupon_code = f"{brand_code}{partner_code}{int(payload.discount_value)}"
+
+        # =====================================================
+        # 4️⃣ INSERT COUPON
+        # =====================================================
+        insert_res = (
+            supabase
+            .table("coupons")
+            .insert({
+                "coupon_code": coupon_code,
+                "offer_by": payload.offer_by,
+                "offer_scope": payload.offer_scope,
+                "brand_id": brand_id,
+                "partner_id": partner_id,
+                "discount_type": payload.discount_type,
+                "discount_value": payload.discount_value,
+                "min_quantity": payload.min_quantity,
+                "start_date": payload.start_date.isoformat(),
+                "end_date": payload.end_date.isoformat(),
+                "is_active": payload.is_active,
+            })
+            .execute()
+        )
+
+        if not insert_res or not insert_res.data:
+            raise HTTPException(500, "Failed to create coupon")
+
+        # =====================================================
+        # 5️⃣ RESPONSE
+        # =====================================================
+        return {
+            "status": "success",
+            "coupon_code": coupon_code,
             "offer_by": payload.offer_by,
-            "offer_scope": offer_scope,
+            "offer_scope": payload.offer_scope,
             "brand_id": brand_id,
-            "partner_id": None,
+            "partner_id": partner_id,
             "discount_type": payload.discount_type,
             "discount_value": payload.discount_value,
             "min_quantity": payload.min_quantity,
-            "start_date": payload.start_date.isoformat(),
-            "end_date": payload.end_date.isoformat(),
+            "start_date": payload.start_date,
+            "end_date": payload.end_date,
             "is_active": payload.is_active,
-        }).execute()
-
-        return {
-            "status": "success",
-            "coupon_code": payload.coupon_code.upper(),
-            "offer_scope": offer_scope,
         }
 
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"Coupon creation failed: {e}")
-
 
 
 @router.get("/coupons")
@@ -1543,6 +1505,53 @@ async def get_all_coupons():
 
     except Exception as e:
         raise HTTPException(500, f"Failed to fetch coupons: {e}")
+
+
+@router.get("/partners/coupons")
+async def get_partner_coupons(
+    user: UserResponse = Depends(get_current_user)
+):
+    # 1️⃣ Resolve partner
+    partner_res = (
+        supabase.table("partners")
+        .select("partner_id")
+        .eq("email_id", user.email)
+        .maybe_single()
+        .execute()
+    )
+
+    if not partner_res or not partner_res.data:
+        raise HTTPException(403, "Not a registered partner")
+
+    partner_id = partner_res.data["partner_id"]
+
+    # 2️⃣ Fetch coupons
+    coupons_res = (
+        supabase.table("coupons")
+        .select("""
+            coupon_id,
+            coupon_code,
+            offer_scope,
+            brand_id,
+            discount_type,
+            discount_value,
+            min_quantity,
+            start_date,
+            end_date,
+            is_active,
+            created_at
+        """)
+        .eq("partner_id", partner_id)
+        .eq("is_active", True)
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    if not coupons_res:
+        raise HTTPException(500, "Failed to fetch coupons")
+
+    return coupons_res.data or []
+
 
 
 

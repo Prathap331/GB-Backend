@@ -4,7 +4,7 @@
 
 from pydantic import BaseModel, EmailStr, Field
 from uuid import UUID
-from typing import Any, Optional,List, Dict
+from typing import Any, Literal, Optional,List, Dict
 from datetime import datetime, date
 from enum import Enum
 from pydantic import BaseModel
@@ -444,23 +444,33 @@ class CouponBase(BaseModel):
     is_active: bool = True
 
 
-class CouponCreate(CouponBase):
-    partner_id: Optional[UUID] = None
-    brand_code: Optional[str] = None
-    product_id: Optional[UUID] = None
 
-
-class CouponResponse(CouponBase):
-    coupon_id: UUID
+class AdminCouponResponse(BaseModel):
+    coupon_code: str
+    offer_by: str
+    offer_scope: str
+    discount_type: str
+    discount_value: float
     partner_id: Optional[UUID]
     brand_id: Optional[UUID]
-    product_id: Optional[UUID]
-    used_count: int
-    created_at: datetime
+    start_date: datetime
+    end_date: datetime
+    is_active: bool
 
-    class Config:
-        from_attributes = True
 
+
+class AdminCouponCreateRequest(BaseModel):
     
-class PartnerCouponGenerateRequest(BaseModel):
-    brand_code: Optional[str] = None  # None = universal (QDIO)
+    offer_by: Literal["direct", "partner"]   # who owns it
+    offer_scope: Literal["universal", "brand"]
+
+    brand_code: Optional[str] = None         # required if brand
+    partner_id: Optional[UUID] = None        # required if partner
+
+    discount_type: Literal["percentage", "flat"]
+    discount_value: float
+    min_quantity: int = 1
+
+    start_date: datetime
+    end_date: datetime
+    is_active: bool = True
