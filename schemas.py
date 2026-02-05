@@ -2,7 +2,7 @@
 # --- Pydantic Schemas ---
 
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, model_validator
 from uuid import UUID
 from typing import Any, Literal, Optional,List, Dict
 from datetime import datetime, date
@@ -230,6 +230,10 @@ class UserCreate(BaseModel):
     full_name: Optional[str] = None
     phone_number: Optional[str] = None
 
+    is_partner: bool = False
+    partner_code: Optional[str] = None
+
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
@@ -248,6 +252,9 @@ class UserResponse(BaseModel):
     created_at: datetime
     token: Optional[str] = None
 
+
+class PartnerActivateRequest(BaseModel):
+    partner_id: UUID
 
 
 
@@ -474,3 +481,23 @@ class AdminCouponCreateRequest(BaseModel):
     start_date: datetime
     end_date: datetime
     is_active: bool = True
+
+
+class PartnerSignupRequest(BaseModel):
+    partner_id: UUID
+    full_name: str
+    email: EmailStr
+    phone_number: str
+    password: str
+    confirm_password: str
+
+    @model_validator(mode="after")
+    def check_passwords(self):
+        if self.password != self.confirm_password:
+            raise ValueError("Passwords do not match")
+        return self
+
+
+class PartnerLoginRequest(BaseModel):
+    email: EmailStr
+    password: str

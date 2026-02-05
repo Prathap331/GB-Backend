@@ -20,7 +20,7 @@ from services import (
     supabase_anon
 )
 from schemas import (
-    AdminCouponCreateRequest, BrandResponse, CategoryResponse, DeliveryStatusCreate, DeliveryStatusEnum, PartnerCreate, PartnerResponse, Product, ProductUpdate, 
+    AdminCouponCreateRequest, BrandResponse, CategoryResponse, DeliveryStatusCreate, DeliveryStatusEnum, PartnerActivateRequest, PartnerCreate, PartnerLoginRequest,  PartnerResponse, PartnerSignupRequest, Product, ProductUpdate, 
     Order, OrderCreate, OrderUpdate,
     Profile, ProfileBase,
     DeliveryPartner,
@@ -53,28 +53,91 @@ def read_root():
 
 
 # AUTH ROUTERS
-
 @router.post("/auth/signup", response_model=UserResponse)
 async def signup(user: UserCreate):
     try:
+        partner_id = None
+
+        # -------------------------
+        # 1️⃣ Partner validation (ONLY if partner)
+        # -------------------------
+        if user.is_partner:
+            if not user.partner_code:
+                raise HTTPException(400, "partner_code is required")
+
+            partner_res = (
+                supabase
+                .table("partners")
+                .select("partner_id")
+                .eq("partner_code", user.partner_code.upper())
+                .maybe_single()
+                .execute()
+            )
+
+            if not partner_res or not partner_res.data:
+                raise HTTPException(400, "Invalid partner code")
+
+            partner_id = partner_res.data["partner_id"]
+
+        # -------------------------
+        # 2️⃣ Create auth user (Supabase handles email verification)
+        # -------------------------
         res = supabase.auth.sign_up({
             "email": user.email,
             "password": user.password,
-            "options": {"data": {"full_name": user.full_name, "phone": user.phone_number}}
+            "options": {
+                "data": {
+                    "full_name": user.full_name,
+                    "phone": user.phone_number
+                },
+                "emailRedirectTo": "https://qdio.in/login"
+            }
         })
 
-        if res.user:
-            profile_check = supabase.table("profiles").select("id").eq("id", res.user.id).execute()
+        if not res or not res.user:
+            raise HTTPException(400, "Could not create user")
 
-            if  profile_check.data:
-                raise HTTPException(status_code=409, detail="Account already exists. Please login instead.")
+        user_id = res.user.id
 
-            return UserResponse(id=res.user.id, email=res.user.email, created_at=res.user.created_at)
+        # -------------------------
+        # 3️⃣ Check profile existence
+        # -------------------------
+        profile_check = (
+            supabase
+            .table("profiles")
+            .select("id")
+            .eq("id", user_id)
+            .maybe_single()
+            .execute()
+        )
 
-        raise HTTPException(400, "Could not create user")
+        if profile_check and profile_check.data:
+            raise HTTPException(
+                409,
+                "Account already exists. Please login."
+            )
 
+        # -------------------------
+        # 4️⃣ Create profile
+        # -------------------------
+        supabase.table("profiles").insert({
+            "id": user_id,
+            "full_name": user.full_name,
+            "phone_number": user.phone_number,
+            "email": user.email,
+            "is_partner": user.is_partner,
+            "partner_id": partner_id
+        }).execute()
+
+        return UserResponse(
+            id=user_id,
+            email=user.email,
+            created_at=res.user.created_at
+        )
+
+    except HTTPException:
+        raise
     except Exception as e:
-        if isinstance(e, HTTPException): raise e
         raise HTTPException(400, str(e))
 
 
@@ -95,6 +158,52 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         raise HTTPException(400, "Incorrect email or password")
 
 
+@router.post("/partners/activate")
+async def activate_partner(
+    payload: PartnerActivateRequest,
+    user: UserResponse = Depends(get_current_user)
+):
+    # 1️⃣ Validate partner_id
+    partner_res = (
+        supabase
+        .table("partners")
+        .select("partner_id")
+        .eq("partner_id", str(payload.partner_id))
+        .maybe_single()
+        .execute()
+    )
+
+    if not partner_res or not partner_res.data:
+        raise HTTPException(400, "Invalid partner_id")
+
+    # 2️⃣ Fetch profile
+    profile_res = (
+        supabase
+        .table("profiles")
+        .select("id, is_partner")
+        .eq("id", str(user.id))
+        .maybe_single()
+        .execute()
+    )
+
+    if not profile_res or not profile_res.data:
+        raise HTTPException(404, "Profile not found")
+
+    if profile_res.data["is_partner"]:
+        raise HTTPException(409, "Already a partner")
+
+    # 3️⃣ Update profile
+    supabase.table("profiles").update({
+        "is_partner": True,
+        "partner_id": str(payload.partner_id)
+    }).eq("id", str(user.id)).execute()
+
+    return {
+        "status": "success",
+        "message": "Partner access activated"
+    }
+
+
 # -----------------------------
 # 🔁 REFRESH ACCESS TOKEN ROUTE
 # -----------------------------
@@ -112,9 +221,18 @@ async def refresh_access_token(payload: RefreshTokenRequest):
     )
 
 
-@router.get("/auth/me", response_model=UserResponse)
-async def get_me(current_user: UserResponse = Depends(get_current_user)):
-    return current_user
+@router.get("/auth/me")
+async def me(user: UserResponse = Depends(get_current_user)):
+    profile = (
+        supabase
+        .table("profiles")
+        .select("full_name, email, is_partner, partner_id")
+        .eq("id", str(user.id))
+        .single()
+        .execute()
+    ).data
+
+    return profile
 
 
 @router.post("/auth/forgot-password")
@@ -1485,6 +1603,7 @@ async def get_all_coupons():
             .select("""
                 coupon_id,
                 coupon_code,
+                offer_by,
                 offer_scope,
                 brand_id,
                 partner_id,
@@ -1775,3 +1894,119 @@ async def update_delivery_status(
         "message": "Delivery status updated successfully",
         "status": payload.status.value
     }
+
+
+# # --- PARTNER SIGNUP ---
+# @router.post("/auth/signup", response_model=UserResponse)
+# async def signup(user: UserCreate):
+#     try:
+#         # -------------------------
+#         # 1️⃣ If partner → validate partner_id
+#         # -------------------------
+#         if user.is_partner:
+#             if not user.partner_id:
+#                 raise HTTPException(400, "partner_id required")
+
+#             partner_res = (
+#                 supabase.table("partners")
+#                 .select("partner_id")
+#                 .eq("partner_id", str(user.partner_id))
+#                 .maybe_single()
+#                 .execute()
+#             )
+
+#             if not partner_res or not partner_res.data:
+#                 raise HTTPException(400, "Invalid partner_id")
+
+#         # -------------------------
+#         # 2️⃣ Create auth user
+#         # -------------------------
+#         res = supabase.auth.sign_up({
+#             "email": user.email,
+#             "password": user.password
+#         })
+
+#         if not res or not res.user:
+#             raise HTTPException(400, "Could not create user")
+
+#         user_id = res.user.id
+
+#         # -------------------------
+#         # 3️⃣ Create profile
+#         # -------------------------
+#         profile_data = {
+#             "id": user_id,
+#             "full_name": user.full_name,
+#             "phone_number": user.phone_number,
+#             "email": user.email,
+#             "is_partner": user.is_partner,
+#             "partner_id": str(user.partner_id) if user.is_partner else None,
+#         }
+
+#         supabase.table("profiles").insert(profile_data).execute()
+
+#         return UserResponse(
+#             id=user_id,
+#             email=user.email,
+#             created_at=res.user.created_at
+#         )
+
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         raise HTTPException(400, str(e))
+
+
+
+# # --- PARTNER LOGIN ---
+# @router.post("/partners-auth/login")
+# async def partner_login(payload: PartnerLoginRequest):
+#     try:
+#         res = supabase.auth.sign_in_with_password({
+#             "email": payload.email,
+#             "password": payload.password
+#         })
+
+#         if not res or not res.session:
+#             raise HTTPException(401, "Invalid credentials")
+
+#         return {
+#             "access_token": res.session.access_token,
+#             "refresh_token": res.session.refresh_token,
+#             "token_type": "bearer"
+#         }
+
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         raise HTTPException(500, f"Login failed: {e}")
+
+
+@router.get("/partners-auth/me")
+async def get_partner_me(
+    user: UserResponse = Depends(get_current_user)
+):
+    try:
+        profile = (
+            supabase.table("partners_profiles")
+            .select("""
+                id,
+                full_name,
+                email,
+                phone_number,
+                partner_id
+            """)
+            .eq("id", str(user.id))
+            .maybe_single()
+            .execute()
+        )
+
+        if not profile or not profile.data:
+            raise HTTPException(404, "Partner profile not found")
+
+        return profile.data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Failed to load partner profile: {e}")
