@@ -365,6 +365,7 @@ class PartnerCreate(BaseModel):
 
 class PartnerResponse(PartnerCreate):
     partner_id: UUID
+    partner_code: str
     created_at: datetime
 
 class CartItem(BaseModel):

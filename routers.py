@@ -1527,12 +1527,7 @@ async def create_coupon_admin(payload: AdminCouponCreateRequest):
 
         # =====================================================
         # 3️⃣ GENERATE COUPON CODE (AUTO ONLY)
-        # =====================================================
-        # Examples:
-        # QDIO10
-        # GB20
-        # QDIOASIY10
-        # GBASIY10
+        
         coupon_code = f"{brand_code}{partner_code}{int(payload.discount_value)}"
 
         # =====================================================
