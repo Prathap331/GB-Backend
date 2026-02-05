@@ -59,12 +59,9 @@ async def signup(user: UserCreate):
         partner_id = None
 
         # -------------------------
-        # 1️⃣ Partner validation (ONLY if partner)
+        # 1️⃣ Validate partner_code (OPTIONAL)
         # -------------------------
-        if user.is_partner:
-            if not user.partner_code:
-                raise HTTPException(400, "partner_code is required")
-
+        if user.partner_code:
             partner_res = (
                 supabase
                 .table("partners")
@@ -80,7 +77,7 @@ async def signup(user: UserCreate):
             partner_id = partner_res.data["partner_id"]
 
         # -------------------------
-        # 2️⃣ Create auth user (Supabase handles email verification)
+        # 2️⃣ Create auth user
         # -------------------------
         res = supabase.auth.sign_up({
             "email": user.email,
@@ -100,7 +97,7 @@ async def signup(user: UserCreate):
         user_id = res.user.id
 
         # -------------------------
-        # 3️⃣ Check profile existence
+        # 3️⃣ Ensure profile does not exist
         # -------------------------
         profile_check = (
             supabase
@@ -112,10 +109,7 @@ async def signup(user: UserCreate):
         )
 
         if profile_check and profile_check.data:
-            raise HTTPException(
-                409,
-                "Account already exists. Please login."
-            )
+            raise HTTPException(409, "Account already exists. Please login.")
 
         # -------------------------
         # 4️⃣ Create profile
@@ -125,7 +119,7 @@ async def signup(user: UserCreate):
             "full_name": user.full_name,
             "phone_number": user.phone_number,
             "email": user.email,
-            "is_partner": user.is_partner,
+            "is_partner": bool(partner_id),
             "partner_id": partner_id
         }).execute()
 

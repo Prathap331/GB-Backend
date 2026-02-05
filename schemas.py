@@ -19,12 +19,15 @@ class ProfileBase(BaseModel):
     email: Optional[str] = None
     gender: Optional[str] = None
     phone_number: Optional[str] = None
+
     address_line1: Optional[str] = None
     address_line2: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
     postal_code: Optional[str] = None
     country: Optional[str] = None
+    is_partner: Optional[bool] = False
+    partner_id: Optional[UUID] = None
 
 
     # --- NEW CONTEST PREFERENCE FIELDS ---
@@ -229,8 +232,6 @@ class UserCreate(BaseModel):
     password: str
     full_name: Optional[str] = None
     phone_number: Optional[str] = None
-
-    is_partner: bool = False
     partner_code: Optional[str] = None
 
 
