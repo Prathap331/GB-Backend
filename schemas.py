@@ -510,19 +510,26 @@ class PartnerProfileBase(BaseModel):
     full_name: str
     email: EmailStr
     phone_number: str
-
+    
 class PartnerDashboardResponse(BaseModel):
     partner_id: UUID
     partner_name: str
 
+    # --- SALES ---
+    total_sale_value: float
+
+    # --- COUPONS ---
     total_coupons: int
     active_coupons_count: int
     active_coupon_codes: list[str]
-
     total_coupon_usage: int
+
+    # --- ORDERS ---
     total_orders: int
     products_sold: int
 
+    # --- BRANDS ---
     associated_brands: list[str]
 
-    total_earnings: float | None = 0.0
+    # --- EARNINGS ---
+    total_earnings: float = 0.0

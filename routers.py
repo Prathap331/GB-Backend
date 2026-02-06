@@ -1998,13 +1998,12 @@ async def update_delivery_status(
     }
 
 
-
-@router.get("/partners/dashboard")
+@router.get("/partners/dashboard", response_model=PartnerDashboardResponse)
 async def get_partner_dashboard(
     current_user: UserResponse = Depends(get_current_user)
 ):
     # =====================================================
-    # 1️⃣ Validate partner from profiles (SOURCE OF TRUTH)
+    # 1️⃣ Verify partner from profiles (WORKING LOGIC)
     # =====================================================
     profile_res = (
         supabase
@@ -2035,10 +2034,10 @@ async def get_partner_dashboard(
         .execute()
     )
 
-    partner_name = partner_res.data["full_name"] if partner_res and partner_res.data else ""
+    partner_name = partner_res.data["full_name"] if partner_res.data else ""
 
     # =====================================================
-    # 3️⃣ Coupons (LIVE)
+    # 3️⃣ Partner coupons
     # =====================================================
     coupons_res = (
         supabase
@@ -2061,29 +2060,39 @@ async def get_partner_dashboard(
     active_coupon_codes = [c["coupon_code"] for c in active_coupons]
     total_coupon_usage = sum(c["used_count"] for c in coupons)
 
-    # =====================================================
-    # 4️⃣ Orders + products sold
-    # =====================================================
-    order_ids = []
+    coupon_ids = [c["coupon_id"] for c in coupons]
 
-    if coupons:
-        coupon_ids = [c["coupon_id"] for c in coupons]
+    # =====================================================
+    # 4️⃣ Orders using partner coupons (🔥 FIXED PART)
+    # =====================================================
+    orders = []
+    total_sale_value = 0.0
 
+    if coupon_ids:
         orders_res = (
             supabase
             .table("orders")
-            .select("order_id")
+            .select("order_id, total_amount")
             .in_("coupon_id", coupon_ids)
             .eq("payment_status", "Completed")
             .execute()
         )
 
-        order_ids = [o["order_id"] for o in (orders_res.data or [])]
+        orders = orders_res.data or []
+        total_sale_value = round(
+            sum(o["total_amount"] for o in orders),
+            2
+        )
 
-    total_orders = len(order_ids)
+    total_orders = len(orders)
 
+    # =====================================================
+    # 5️⃣ Products sold
+    # =====================================================
     products_sold = 0
-    if order_ids:
+    if orders:
+        order_ids = [o["order_id"] for o in orders]
+
         items_res = (
             supabase
             .table("order_items")
@@ -2091,57 +2100,48 @@ async def get_partner_dashboard(
             .in_("order_id", order_ids)
             .execute()
         )
+
         products_sold = sum(i["quantity"] for i in (items_res.data or []))
 
     # =====================================================
-    # 5️⃣ Brand names
+    # 6️⃣ Partner brands
     # =====================================================
     brand_ids = {c["brand_id"] for c in coupons if c["brand_id"]}
     brand_names = []
 
     if brand_ids:
-        brands_res = (
+        brand_res = (
             supabase
             .table("brands")
             .select("brand_name")
             .in_("brand_id", list(brand_ids))
             .execute()
         )
-        brand_names = [b["brand_name"] for b in (brands_res.data or [])]
+
+        brand_names = [b["brand_name"] for b in (brand_res.data or [])]
 
     # =====================================================
-    # 6️⃣ Earnings (ONLY from partners_profiles)
+    # 7️⃣ Earnings (6% commission)
     # =====================================================
-    earnings_res = (
-        supabase
-        .table("partners_profiles")
-        .select("total_earnings")
-        .eq("partner_id", partner_id)
-        .maybe_single()
-        .execute()
-    )
-
-    total_earnings = (
-        earnings_res.data["total_earnings"]
-        if earnings_res and earnings_res.data
-        else 0
-    )
+    total_earnings = round(total_sale_value * 0.06, 2)
 
     # =====================================================
-    # 7️⃣ Response
+    # 8️⃣ Response
     # =====================================================
-    return PartnerDashboardResponse(
-        partner_id=partner_id,
-        partner_name=partner_name,
+    return {
+        "partner_id": partner_id,
+        "partner_name": partner_name,
 
-        total_coupons=total_coupons,
-        active_coupons_count=len(active_coupons),
-        active_coupon_codes=active_coupon_codes,
+        "total_sale_value": total_sale_value,
 
-        total_coupon_usage=total_coupon_usage,
-        total_orders=total_orders,
-        products_sold=products_sold,
+        "total_coupons": total_coupons,
+        "active_coupons_count": len(active_coupons),
+        "active_coupon_codes": active_coupon_codes,
+        "total_coupon_usage": total_coupon_usage,
 
-        associated_brands=brand_names,
-        total_earnings=total_earnings,
-    )
+        "total_orders": total_orders,
+        "products_sold": products_sold,
+
+        "associated_brands": brand_names,
+        "total_earnings": total_earnings,
+    }
