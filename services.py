@@ -32,8 +32,7 @@ supabase_anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 # Pure DB client (NO auth state, RLS bypass)
 supabase_db = create_client(
     SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY,
-    options={"auth": {"persistSession": False}}
+    SUPABASE_SERVICE_ROLE_KEY
 )
 
 
