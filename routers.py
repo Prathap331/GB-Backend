@@ -1996,121 +1996,7 @@ async def update_delivery_status(
         "status": payload.status.value
     }
 
-
-# # --- PARTNER SIGNUP ---
-# @router.post("/auth/signup", response_model=UserResponse)
-# async def signup(user: UserCreate):
-#     try:
-#         # -------------------------
-#         # 1️⃣ If partner → validate partner_id
-#         # -------------------------
-#         if user.is_partner:
-#             if not user.partner_id:
-#                 raise HTTPException(400, "partner_id required")
-
-#             partner_res = (
-#                 supabase.table("partners")
-#                 .select("partner_id")
-#                 .eq("partner_id", str(user.partner_id))
-#                 .maybe_single()
-#                 .execute()
-#             )
-
-#             if not partner_res or not partner_res.data:
-#                 raise HTTPException(400, "Invalid partner_id")
-
-#         # -------------------------
-#         # 2️⃣ Create auth user
-#         # -------------------------
-#         res = supabase.auth.sign_up({
-#             "email": user.email,
-#             "password": user.password
-#         })
-
-#         if not res or not res.user:
-#             raise HTTPException(400, "Could not create user")
-
-#         user_id = res.user.id
-
-#         # -------------------------
-#         # 3️⃣ Create profile
-#         # -------------------------
-#         profile_data = {
-#             "id": user_id,
-#             "full_name": user.full_name,
-#             "phone_number": user.phone_number,
-#             "email": user.email,
-#             "is_partner": user.is_partner,
-#             "partner_id": str(user.partner_id) if user.is_partner else None,
-#         }
-
-#         supabase.table("profiles").insert(profile_data).execute()
-
-#         return UserResponse(
-#             id=user_id,
-#             email=user.email,
-#             created_at=res.user.created_at
-#         )
-
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         raise HTTPException(400, str(e))
-
-
-
-# # --- PARTNER LOGIN ---
-# @router.post("/partners-auth/login")
-# async def partner_login(payload: PartnerLoginRequest):
-#     try:
-#         res = supabase.auth.sign_in_with_password({
-#             "email": payload.email,
-#             "password": payload.password
-#         })
-
-#         if not res or not res.session:
-#             raise HTTPException(401, "Invalid credentials")
-
-#         return {
-#             "access_token": res.session.access_token,
-#             "refresh_token": res.session.refresh_token,
-#             "token_type": "bearer"
-#         }
-
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         raise HTTPException(500, f"Login failed: {e}")
-
-
-@router.get("/partners-auth/me")
-async def get_partner_me(
-    user: UserResponse = Depends(get_current_user)
-):
-    try:
-        profile = (
-            supabase.table("partners_profiles")
-            .select("""
-                id,
-                full_name,
-                email,
-                phone_number,
-                partner_id
-            """)
-            .eq("id", str(user.id))
-            .maybe_single()
-            .execute()
-        )
-
-        if not profile or not profile.data:
-            raise HTTPException(404, "Partner profile not found")
-
-        return profile.data
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"Failed to load partner profile: {e}")
+    
 
 @router.get("/partners/dashboard")
 async def partner_dashboard(
@@ -2118,30 +2004,70 @@ async def partner_dashboard(
 ):
     try:
         # =====================================================
-        # 1️⃣ Resolve partner profile (AUTH → BUSINESS LINK)
+        # 1️⃣ AUTH SOURCE OF TRUTH → profiles table
         # =====================================================
         profile_res = (
             supabase
-            .table("partners_profiles")
+            .table("profiles")
             .select("""
-                partner_id,
-                partner_code,
+                id,
                 full_name,
-                total_earnings
+                email,
+                is_partner,
+                partner_id
             """)
-            .eq("id", str(user.id))     # 🔑 auth.users.id ONLY
+            .eq("id", str(user.id))
             .maybe_single()
             .execute()
         )
 
         if not profile_res or not profile_res.data:
-            raise HTTPException(403, "Not a partner account")
+            raise HTTPException(401, "Profile not found")
 
         profile = profile_res.data
+
+        if not profile["is_partner"] or not profile["partner_id"]:
+            raise HTTPException(403, "Not a partner account")
+
         partner_id = profile["partner_id"]
 
         # =====================================================
-        # 2️⃣ Fetch ACTIVE partner coupons + brand info
+        # 2️⃣ ENSURE partners_profiles ROW EXISTS (AUTO-HEAL)
+        # =====================================================
+        partner_profile_res = (
+            supabase
+            .table("partners_profiles")
+            .select("""
+                id,
+                partner_code,
+                total_earnings
+            """)
+            .eq("id", str(user.id))
+            .maybe_single()
+            .execute()
+        )
+
+        if not partner_profile_res or not partner_profile_res.data:
+            # auto-create partner profile if missing
+            partner_profile_res = (
+                supabase
+                .table("partners_profiles")
+                .insert({
+                    "id": str(user.id),
+                    "partner_id": partner_id,
+                    "full_name": profile["full_name"],
+                    "email": profile["email"],
+                    "phone_number": None,
+                })
+                .execute()
+            )
+
+            partner_profile = partner_profile_res.data[0]
+        else:
+            partner_profile = partner_profile_res.data
+
+        # =====================================================
+        # 3️⃣ ACTIVE COUPONS + BRAND INFO
         # =====================================================
         coupons_res = (
             supabase
@@ -2150,13 +2076,12 @@ async def partner_dashboard(
                 coupon_code,
                 discount_type,
                 discount_value,
-                brand_id,
                 brands (
                     brand_name,
                     brand_logo
                 )
             """)
-            .eq("partner_id", partner_id)   # ✅ business FK
+            .eq("partner_id", partner_id)
             .eq("is_active", True)
             .execute()
         )
@@ -2164,26 +2089,24 @@ async def partner_dashboard(
         coupons = coupons_res.data or []
 
         # =====================================================
-        # 3️⃣ Fetch COMPLETED orders using partner coupons
+        # 4️⃣ ORDERS USING PARTNER COUPONS
         # =====================================================
         orders_res = (
             supabase
             .table("orders")
             .select("order_id, total_amount")
-            .eq("partner_id", partner_id)   # ✅ business FK
+            .eq("partner_id", partner_id)
             .eq("payment_status", "Completed")
             .execute()
         )
 
         orders = orders_res.data or []
-
         total_sale_value = sum(o["total_amount"] for o in orders)
 
         # =====================================================
-        # 4️⃣ Calculate products sold
+        # 5️⃣ PRODUCTS SOLD
         # =====================================================
         products_sold = 0
-
         if orders:
             order_ids = [o["order_id"] for o in orders]
 
@@ -2200,15 +2123,15 @@ async def partner_dashboard(
             )
 
         # =====================================================
-        # 5️⃣ Build dashboard response
+        # 6️⃣ RESPONSE
         # =====================================================
         return {
             "partner_id": partner_id,
-            "partner_code": profile["partner_code"],
+            "partner_code": partner_profile.get("partner_code"),
             "partner_name": profile["full_name"],
 
-            "total_sale_value": total_sale_value,
-            "your_earnings": profile["total_earnings"],
+            "total_sale_value": round(total_sale_value, 2),
+            "your_earnings": float(partner_profile.get("total_earnings", 0)),
 
             "products_sold": products_sold,
             "active_coupons": len(coupons),
@@ -2218,14 +2141,8 @@ async def partner_dashboard(
                     "coupon_code": c["coupon_code"],
                     "discount_type": c["discount_type"],
                     "discount_value": c["discount_value"],
-                    "brand_name": (
-                        c["brands"]["brand_name"]
-                        if c.get("brands") else None
-                    ),
-                    "brand_logo": (
-                        c["brands"]["brand_logo"]
-                        if c.get("brands") else None
-                    ),
+                    "brand_name": c["brands"]["brand_name"] if c["brands"] else None,
+                    "brand_logo": c["brands"]["brand_logo"] if c["brands"] else None,
                 }
                 for c in coupons
             ],
@@ -2233,14 +2150,11 @@ async def partner_dashboard(
             "partner_brands": list({
                 c["brands"]["brand_name"]
                 for c in coupons
-                if c.get("brands")
-            })
+                if c["brands"]
+            }),
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Dashboard fetch failed: {e}"
-        )
+        raise HTTPException(500, f"Dashboard fetch failed: {e}")
