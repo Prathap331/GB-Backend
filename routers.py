@@ -1028,6 +1028,44 @@ async def create_order(
     return final_order
 
 
+from typing import Optional
+from fastapi import Query
+
+@router.get("/orders")
+async def get_orders(
+    partner_id: Optional[str] = Query(None, description="Filter orders by partner_id")
+):
+    """
+    Get all orders.
+    Optionally filter by partner_id (DD).
+    """
+
+    query = (
+        supabase
+        .table("orders")
+        .select("""
+            *,
+            order_items(
+                *,
+                products(
+                    product_name,
+                    category,
+                    sub_category,
+                    images
+                )
+            )
+        """)
+        .order("created_at", desc=True)
+    )
+
+    # 🔹 Apply filter only if partner_id is provided
+    if partner_id:
+        query = query.eq("partner_id", partner_id)
+
+    res = query.execute()
+
+    return res.data
+
 
 
 @router.get("/orders/me", response_model=List[Order])
