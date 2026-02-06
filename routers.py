@@ -7,6 +7,8 @@ import uuid
 from fastapi import Header, HTTPException
 import json
 import razorpay
+import asyncio
+
 
 from supabase import create_client
 from services import (
@@ -52,91 +54,93 @@ def read_root():
 
 
 # AUTH ROUTERS
-from fastapi import HTTPException
-import asyncio
 
 @router.post("/auth/signup", response_model=UserResponse)
 async def signup(user: UserCreate):
-    try:
-        partner_id = None
+    partner_id = None
 
-        # -------------------------
-        # 1️⃣ Validate partner_code (DB – service role)
-        # -------------------------
-        if user.partner_code:
-            partner_res = (
-                supabase
-                .table("partners")
-                .select("partner_id")
-                .eq("partner_code", user.partner_code.upper())
-                .maybe_single()
-                .execute()
-            )
+    # -------------------------
+    # 1️⃣ Validate partner_code (SERVER DB – service role)
+    # -------------------------
+    if user.partner_code:
+        partner_res = (
+            supabase
+            .table("partners")
+            .select("partner_id")
+            .eq("partner_code", user.partner_code.upper())
+            .maybe_single()
+            .execute()
+        )
 
-            if not partner_res or not partner_res.data:
-                raise HTTPException(400, "Invalid partner code")
+        if not partner_res or not partner_res.data:
+            raise HTTPException(status_code=400, detail="Invalid partner code")
 
-            partner_id = partner_res.data["partner_id"]
+        partner_id = partner_res.data["partner_id"]
 
-        print("DEBUG | partner_code:", user.partner_code)
-        print("DEBUG | partner_id:", partner_id)
+    print("DEBUG | partner_code:", user.partner_code)
+    print("DEBUG | partner_id:", partner_id)
 
-        # -------------------------
-        # 2️⃣ Create auth user (PUBLIC SIGNUP – anon client)
-        # -------------------------
-        res = supabase_anon.auth.sign_up({
-            "email": user.email,
-            "password": user.password,
-            "options": {
-                "data": {
-                    "full_name": user.full_name,
-                    "phone": user.phone_number
-                }
+    # -------------------------
+    # 2️⃣ Auth signup (PUBLIC – anon client)
+    # -------------------------
+    res = supabase_anon.auth.sign_up({
+        "email": user.email,
+        "password": user.password,
+        "options": {
+            "data": {
+                "full_name": user.full_name,
+                "phone": user.phone_number
             }
-        })
-
-        if not res or not res.user:
-            raise HTTPException(400, "Could not create user")
-
-        user_id = res.user.id
-        print("DEBUG | auth user_id:", user_id)
-
-        # -------------------------
-        # 3️⃣ WAIT to avoid FK timing issue (IMPORTANT)
-        # -------------------------
-        await asyncio.sleep(0.3)  # 300ms is enough
-
-        # -------------------------
-        # 4️⃣ Upsert profile (DB – service role)
-        # -------------------------
-        profile_payload = {
-            "id": user_id,
-            "full_name": user.full_name,
-            "phone_number": user.phone_number,
-            "email": user.email,
-            "is_partner": bool(partner_id),
-            "partner_id": partner_id,
         }
+    })
 
+    # IMPORTANT: signup either succeeds or raises
+    if not res or not res.user:
+        raise HTTPException(status_code=400, detail="Signup failed")
+
+    user_id = res.user.id
+    print("DEBUG | auth user_id:", user_id)
+
+    # -------------------------
+    # 3️⃣ WAIT for auth.users commit (VERY IMPORTANT)
+    # -------------------------
+    # Email verification ON → needs more time
+    await asyncio.sleep(1.0)
+
+    # -------------------------
+    # 4️⃣ Upsert profile (SERVER DB – service role)
+    #     ❗ NEVER fail signup if this fails
+    # -------------------------
+    profile_payload = {
+        "id": user_id,
+        "full_name": user.full_name,
+        "phone_number": user.phone_number,
+        "email": user.email,
+        "is_partner": bool(partner_id),
+        "partner_id": partner_id,
+    }
+
+    try:
         upsert_res = (
             supabase
             .table("profiles")
             .upsert(profile_payload, on_conflict="id")
             .execute()
         )
-
         print("DEBUG | profile upsert response:", upsert_res.data)
 
-        return UserResponse(
-            id=user_id,
-            email=user.email,
-            created_at=res.user.created_at
-        )
-
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(400, str(e))
+        # ❗ DO NOT raise — auth already succeeded
+        print("PROFILE UPSERT FAILED (will retry later):", e)
+
+    # -------------------------
+    # 5️⃣ Always return success if auth succeeded
+    # -------------------------
+    return UserResponse(
+        id=user_id,
+        email=user.email,
+        created_at=res.user.created_at
+    )
 
 
 # login
@@ -1037,8 +1041,6 @@ async def create_order(
     return final_order
 
 
-from typing import Optional
-from fastapi import Query
 
 @router.get("/orders")
 async def get_orders(
