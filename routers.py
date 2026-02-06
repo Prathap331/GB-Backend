@@ -9,7 +9,6 @@ import json
 import razorpay
 
 from supabase import create_client
-from coupoon_rules import COUPON_RULES
 from services import (
     SYNC_SECRET,
     fetch_supplier_products,
@@ -53,13 +52,16 @@ def read_root():
 
 
 # AUTH ROUTERS
+from fastapi import HTTPException
+import asyncio
+
 @router.post("/auth/signup", response_model=UserResponse)
 async def signup(user: UserCreate):
     try:
         partner_id = None
 
         # -------------------------
-        # 1️⃣ Validate partner_code (OPTIONAL)
+        # 1️⃣ Validate partner_code (DB – service role)
         # -------------------------
         if user.partner_code:
             partner_res = (
@@ -79,24 +81,19 @@ async def signup(user: UserCreate):
         print("DEBUG | partner_code:", user.partner_code)
         print("DEBUG | partner_id:", partner_id)
 
-        try:
-            users = supabase.auth.admin.list_users()
-            print("DEBUG | admin list_users SUCCESS, count:", len(users.users))
-        except Exception as e:
-            print("DEBUG | admin list_users FAILED:", e)
-
         # -------------------------
-        # 2️⃣ Create auth user
+        # 2️⃣ Create auth user (PUBLIC SIGNUP – anon client)
         # -------------------------
-        res = supabase.auth.admin.create_user({
-                "email": user.email,
-                "password": user.password,
-                "email_confirm": True,
-                "user_metadata": {
+        res = supabase_anon.auth.sign_up({
+            "email": user.email,
+            "password": user.password,
+            "options": {
+                "data": {
                     "full_name": user.full_name,
                     "phone": user.phone_number
                 }
-            })
+            }
+        })
 
         if not res or not res.user:
             raise HTTPException(400, "Could not create user")
@@ -104,9 +101,13 @@ async def signup(user: UserCreate):
         user_id = res.user.id
         print("DEBUG | auth user_id:", user_id)
 
+        # -------------------------
+        # 3️⃣ WAIT to avoid FK timing issue (IMPORTANT)
+        # -------------------------
+        await asyncio.sleep(0.3)  # 300ms is enough
 
         # -------------------------
-        # 3️⃣ Upsert profile (SAFE)
+        # 4️⃣ Upsert profile (DB – service role)
         # -------------------------
         profile_payload = {
             "id": user_id,
@@ -217,19 +218,27 @@ async def refresh_access_token(payload: RefreshTokenRequest):
         token_type="bearer"
     )
 
-
 @router.get("/auth/me")
 async def me(user: UserResponse = Depends(get_current_user)):
-    profile = (
+    profile = {}
+
+    res = (
         supabase
         .table("profiles")
         .select("full_name, email, is_partner, partner_id")
         .eq("id", str(user.id))
-        .single()
+        .maybe_single()
         .execute()
-    ).data
+    )
 
-    return profile
+    if res and res.data:
+        profile = res.data
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        **profile
+    }
 
 
 @router.post("/auth/forgot-password")
@@ -2102,160 +2111,117 @@ async def get_partner_me(
         raise HTTPException(500, f"Failed to load partner profile: {e}")
 
 
-@router.get("/partners/dashboard", response_model=PartnerDashboardResponse)
-async def get_partner_dashboard(
-    current_user: UserResponse = Depends(get_current_user)
-):
-    """
-    Partner dashboard (computed, no duplication)
-    """
 
-    # =====================================================
-    # 1️⃣ Verify partner profile
-    # =====================================================
-    profile_res = (
-        supabase
-        .table("profiles")
-        .select("partner_id, is_partner")
-        .eq("id", str(current_user.id))
-        .maybe_single()
-        .execute()
-    )
+@router.get("/partners/dashboard")
+async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
+    try:
+        # ------------------------------------------------
+        # 1️⃣ Fetch partner profile
+        # ------------------------------------------------
+        profile_res = (
+            supabase
+            .table("partners_profiles")
+            .select("""
+                partner_id,
+                partner_code,
+                full_name,
+                total_earnings
+            """)
+            .eq("id", str(user.id))
+            .maybe_single()
+            .execute()
+        )
 
-    if not profile_res or not profile_res.data:
-        raise HTTPException(404, "Profile not found")
+        if not profile_res or not profile_res.data:
+            raise HTTPException(403, "Not a partner account")
 
-    if not profile_res.data["is_partner"]:
-        raise HTTPException(403, "Not a partner account")
+        profile = profile_res.data
+        partner_id = profile["partner_id"]
 
-    partner_id = profile_res.data["partner_id"]
+        # ------------------------------------------------
+        # 2️⃣ Coupons + brand info
+        # ------------------------------------------------
+        coupons_res = (
+            supabase
+            .table("coupons")
+            .select("""
+                coupon_code,
+                discount_type,
+                discount_value,
+                brand_id,
+                brands (
+                    brand_name,
+                    brand_logo
+                )
+            """)
+            .eq("partner_id", partner_id)
+            .eq("is_active", True)
+            .execute()
+        )
 
-    # =====================================================
-    # 2️⃣ Fetch partner info
-    # =====================================================
-    partner_res = (
-        supabase
-        .table("partners")
-        .select("partner_id, full_name")
-        .eq("partner_id", partner_id)
-        .maybe_single()
-        .execute()
-    )
+        coupons = coupons_res.data or []
 
-    if not partner_res or not partner_res.data:
-        raise HTTPException(404, "Partner not found")
-
-    partner_name = partner_res.data["full_name"]
-
-    # =====================================================
-    # 3️⃣ Coupons data
-    # =====================================================
-    coupons_res = (
-        supabase
-        .table("coupons")
-        .select("""
-            coupon_id,
-            coupon_code,
-            is_active,
-            used_count,
-            brand_id
-        """)
-        .eq("partner_id", partner_id)
-        .execute()
-    )
-
-    coupons = coupons_res.data or []
-
-    total_coupons = len(coupons)
-    active_coupons = [c for c in coupons if c["is_active"]]
-
-    active_coupon_codes = [c["coupon_code"] for c in active_coupons]
-    total_coupon_usage = sum(c["used_count"] for c in coupons)
-
-    # unique brands
-    brand_ids = {c["brand_id"] for c in coupons if c["brand_id"]}
-
-    # =====================================================
-    # 4️⃣ Orders + products sold
-    # =====================================================
-    order_ids = []
-
-    if coupons:
-        coupon_ids = [c["coupon_id"] for c in coupons]
-
+        # ------------------------------------------------
+        # 3️⃣ Orders using partner coupons
+        # ------------------------------------------------
         orders_res = (
             supabase
             .table("orders")
-            .select("order_id")
-            .in_("coupon_id", coupon_ids)
+            .select("order_id, total_amount")
+            .eq("partner_id", partner_id)
+            .eq("payment_status", "Completed")
             .execute()
         )
 
-        order_ids = [o["order_id"] for o in (orders_res.data or [])]
+        orders = orders_res.data or []
 
-    total_orders = len(order_ids)
-    products_sold = 0
+        total_sale_value = sum(o["total_amount"] for o in orders)
 
-    if order_ids:
-        items_res = (
+        # ------------------------------------------------
+        # 4️⃣ Products sold
+        # ------------------------------------------------
+        products_res = (
             supabase
             .table("order_items")
             .select("quantity")
-            .in_("order_id", order_ids)
+            .in_("order_id", [o["order_id"] for o in orders])
             .execute()
         )
 
-        products_sold = sum(i["quantity"] for i in (items_res.data or []))
+        products_sold = sum(p["quantity"] for p in (products_res.data or []))
 
-    # =====================================================
-    # 5️⃣ Brand names
-    # =====================================================
-    brand_names = []
+        # ------------------------------------------------
+        # 5️⃣ Build response
+        # ------------------------------------------------
+        return {
+            "partner_id": partner_id,
+            "partner_name": profile["full_name"],
 
-    if brand_ids:
-        brand_res = (
-            supabase
-            .table("brands")
-            .select("brand_name")
-            .in_("brand_id", list(brand_ids))
-            .execute()
-        )
+            "total_sale_value": total_sale_value,
+            "your_earnings": profile["total_earnings"],
 
-        brand_names = [b["brand_name"] for b in (brand_res.data or [])]
+            "products_sold": products_sold,
+            "active_coupons": len(coupons),
 
-    # =====================================================
-    # 6️⃣ Manual earnings (from partners_profiles)
-    # =====================================================
-    earnings_res = (
-        supabase
-        .table("partners_profiles")
-        .select("total_earnings")
-        .eq("partner_id", partner_id)
-        .maybe_single()
-        .execute()
-    )
+            "coupons": [
+                {
+                    "coupon_code": c["coupon_code"],
+                    "discount_type": c["discount_type"],
+                    "discount_value": c["discount_value"],
+                    "brand_name": c["brands"]["brand_name"] if c["brands"] else None,
+                    "brand_logo": c["brands"]["brand_logo"] if c["brands"] else None,
+                }
+                for c in coupons
+            ],
 
-    total_earnings = (
-        earnings_res.data["total_earnings"]
-        if earnings_res and earnings_res.data
-        else 0.0
-    )
+            "partner_brands": list({
+                c["brands"]["brand_name"]
+                for c in coupons
+                if c["brands"]
+            })
+        }
 
-    # =====================================================
-    # 7️⃣ Response
-    # =====================================================
-    return PartnerDashboardResponse(
-        partner_id=partner_id,
-        partner_name=partner_name,
-
-        total_coupons=total_coupons,
-        active_coupons_count=len(active_coupons),
-        active_coupon_codes=active_coupon_codes,
-
-        total_coupon_usage=total_coupon_usage,
-        total_orders=total_orders,
-        products_sold=products_sold,
-
-        associated_brands=brand_names,
-        total_earnings=total_earnings,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Dashboard fetch failed: {e}")
