@@ -29,6 +29,14 @@ supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 supabase_anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
 
+# Pure DB client (NO auth state, RLS bypass)
+supabase_db = create_client(
+    SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY,
+    options={"auth": {"persistSession": False}}
+)
+
+
 # -------- RAZORPAY --------
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID")
 RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET")
