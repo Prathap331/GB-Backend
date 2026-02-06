@@ -2110,14 +2110,14 @@ async def get_partner_me(
     except Exception as e:
         raise HTTPException(500, f"Failed to load partner profile: {e}")
 
-
-
 @router.get("/partners/dashboard")
-async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
+async def partner_dashboard(
+    user: UserResponse = Depends(get_current_user)
+):
     try:
-        # ------------------------------------------------
-        # 1️⃣ Fetch partner profile
-        # ------------------------------------------------
+        # =====================================================
+        # 1️⃣ Resolve partner profile (AUTH → BUSINESS LINK)
+        # =====================================================
         profile_res = (
             supabase
             .table("partners_profiles")
@@ -2127,7 +2127,7 @@ async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
                 full_name,
                 total_earnings
             """)
-            .eq("id", str(user.id))
+            .eq("id", str(user.id))     # 🔑 auth.users.id ONLY
             .maybe_single()
             .execute()
         )
@@ -2138,9 +2138,9 @@ async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
         profile = profile_res.data
         partner_id = profile["partner_id"]
 
-        # ------------------------------------------------
-        # 2️⃣ Coupons + brand info
-        # ------------------------------------------------
+        # =====================================================
+        # 2️⃣ Fetch ACTIVE partner coupons + brand info
+        # =====================================================
         coupons_res = (
             supabase
             .table("coupons")
@@ -2154,21 +2154,21 @@ async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
                     brand_logo
                 )
             """)
-            .eq("partner_id", partner_id)
+            .eq("partner_id", partner_id)   # ✅ business FK
             .eq("is_active", True)
             .execute()
         )
 
         coupons = coupons_res.data or []
 
-        # ------------------------------------------------
-        # 3️⃣ Orders using partner coupons
-        # ------------------------------------------------
+        # =====================================================
+        # 3️⃣ Fetch COMPLETED orders using partner coupons
+        # =====================================================
         orders_res = (
             supabase
             .table("orders")
             .select("order_id, total_amount")
-            .eq("partner_id", partner_id)
+            .eq("partner_id", partner_id)   # ✅ business FK
             .eq("payment_status", "Completed")
             .execute()
         )
@@ -2177,24 +2177,32 @@ async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
 
         total_sale_value = sum(o["total_amount"] for o in orders)
 
-        # ------------------------------------------------
-        # 4️⃣ Products sold
-        # ------------------------------------------------
-        products_res = (
-            supabase
-            .table("order_items")
-            .select("quantity")
-            .in_("order_id", [o["order_id"] for o in orders])
-            .execute()
-        )
+        # =====================================================
+        # 4️⃣ Calculate products sold
+        # =====================================================
+        products_sold = 0
 
-        products_sold = sum(p["quantity"] for p in (products_res.data or []))
+        if orders:
+            order_ids = [o["order_id"] for o in orders]
 
-        # ------------------------------------------------
-        # 5️⃣ Build response
-        # ------------------------------------------------
+            items_res = (
+                supabase
+                .table("order_items")
+                .select("quantity")
+                .in_("order_id", order_ids)
+                .execute()
+            )
+
+            products_sold = sum(
+                i["quantity"] for i in (items_res.data or [])
+            )
+
+        # =====================================================
+        # 5️⃣ Build dashboard response
+        # =====================================================
         return {
             "partner_id": partner_id,
+            "partner_code": profile["partner_code"],
             "partner_name": profile["full_name"],
 
             "total_sale_value": total_sale_value,
@@ -2208,8 +2216,14 @@ async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
                     "coupon_code": c["coupon_code"],
                     "discount_type": c["discount_type"],
                     "discount_value": c["discount_value"],
-                    "brand_name": c["brands"]["brand_name"] if c["brands"] else None,
-                    "brand_logo": c["brands"]["brand_logo"] if c["brands"] else None,
+                    "brand_name": (
+                        c["brands"]["brand_name"]
+                        if c.get("brands") else None
+                    ),
+                    "brand_logo": (
+                        c["brands"]["brand_logo"]
+                        if c.get("brands") else None
+                    ),
                 }
                 for c in coupons
             ],
@@ -2217,11 +2231,14 @@ async def partner_dashboard(user: UserResponse = Depends(get_current_user)):
             "partner_brands": list({
                 c["brands"]["brand_name"]
                 for c in coupons
-                if c["brands"]
+                if c.get("brands")
             })
         }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Dashboard fetch failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Dashboard fetch failed: {e}"
+        )
