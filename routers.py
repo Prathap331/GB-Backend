@@ -79,6 +79,11 @@ async def signup(user: UserCreate):
         print("DEBUG | partner_code:", user.partner_code)
         print("DEBUG | partner_id:", partner_id)
 
+        try:
+            users = supabase.auth.admin.list_users()
+            print("DEBUG | admin list_users SUCCESS, count:", len(users.users))
+        except Exception as e:
+            print("DEBUG | admin list_users FAILED:", e)
 
         # -------------------------
         # 2️⃣ Create auth user

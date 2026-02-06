@@ -17,11 +17,25 @@ SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY or not SUPABASE_ANON_KEY:
     raise Exception("Supabase env variables missing")
 
+SUPABASE_SERVICE_ROLE_KEY = SUPABASE_SERVICE_ROLE_KEY.strip()
+SUPABASE_ANON_KEY = SUPABASE_ANON_KEY.strip()
+
 # Admin DB client (server only)
 supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 # Auth-safe client (for user tokens)
 supabase_anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+
+import jwt
+
+decoded = jwt.decode(
+    SUPABASE_SERVICE_ROLE_KEY,
+    options={"verify_signature": False}
+)
+
+print("DEBUG | service role JWT payload:", decoded)
+print("DEBUG | role from key:", decoded.get("role"))
 
 
 # -------- RAZORPAY --------
