@@ -503,3 +503,26 @@ class PartnerSignupRequest(BaseModel):
 class PartnerLoginRequest(BaseModel):
     email: EmailStr
     password: str
+
+
+
+class PartnerProfileBase(BaseModel):
+    full_name: str
+    email: EmailStr
+    phone_number: str
+
+class PartnerDashboardResponse(BaseModel):
+    partner_id: UUID
+    partner_name: str
+
+    total_coupons: int
+    active_coupons_count: int
+    active_coupon_codes: list[str]
+
+    total_coupon_usage: int
+    total_orders: int
+    products_sold: int
+
+    associated_brands: list[str]
+
+    total_earnings: float | None = 0.0
