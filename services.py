@@ -23,7 +23,7 @@ SUPABASE_ANON_KEY = SUPABASE_ANON_KEY.strip()
 
 
 # Admin DB client (server only)
-supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 # Auth-safe client (for user tokens)
 supabase_anon = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -34,6 +34,15 @@ supabase_db = create_client(
     SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY
 )
+
+
+def get_user_supabase(token: str):
+    client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+    client.postgrest.auth(token)
+    return client
+
+
+
 
 
 # -------- RAZORPAY --------

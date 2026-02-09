@@ -4,7 +4,7 @@ import uuid
 from fastapi import APIRouter, HTTPException, Request
 import requests
 from fastapi.responses import RedirectResponse
-from services import supabase
+from services import supabase_admin
 from utils import dump_shopify_debug, map_shopify_product, map_shopify_variant, upsert_product, upsert_variant
 
 router = APIRouter(prefix="/shopify", tags=["Shopify"])
@@ -60,7 +60,7 @@ def shopify_oauth_callback(request: Request):
 
     # 2. Check if supplier already exists (SAFE WAY)
     existing = (
-        supabase.table("suppliers")
+        supabase_admin.table("suppliers")
         .select("supplier_id")
         .eq("shop_domain", shop)
         .execute()
@@ -68,7 +68,7 @@ def shopify_oauth_callback(request: Request):
 
     # 3A. Supplier NOT found → INSERT
     if not existing or not existing.data:
-        supabase.table("suppliers").insert({
+        supabase_admin.table("suppliers").insert({
             "shop_domain": shop,
             "shop_access_token": access_token,
             "integration_type": "shopify",
@@ -83,7 +83,7 @@ def shopify_oauth_callback(request: Request):
     # 3B. Supplier already exists → UPDATE
     supplier_id = existing.data[0]["supplier_id"]
 
-    supabase.table("suppliers").update({
+    supabase_admin.table("suppliers").update({
         "shop_access_token": access_token,
         "is_active": True
     }).eq("supplier_id", supplier_id).execute()
@@ -103,7 +103,7 @@ def sync_shopify_products(supplier_id: str):
 
     # 1. Fetch supplier
     supplier_res = (
-        supabase.table("suppliers")
+        supabase_admin.table("suppliers")
         .select("supplier_id, shop_domain, shop_access_token, integration_type")
         .eq("supplier_id", supplier_id)
         .single()

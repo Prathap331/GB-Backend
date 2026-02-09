@@ -8,13 +8,12 @@ from fastapi import Header, HTTPException
 import json
 import razorpay
 import asyncio
-
-
 from supabase import create_client
 from services import (
     SYNC_SECRET,
     fetch_supplier_products,
-    supabase,
+    get_user_supabase,
+    supabase_admin,
     supabase_db,
     razorpay_client,
     RAZORPAY_KEY_ID,
@@ -65,7 +64,7 @@ async def signup(user: UserCreate):
     # -------------------------
     if user.partner_code:
         partner_res = (
-            supabase
+            supabase_admin
             .table("partners")
             .select("partner_id")
             .eq("partner_code", user.partner_code.upper())
@@ -148,7 +147,7 @@ async def signup(user: UserCreate):
 @router.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     try:
-        res = supabase.auth.sign_in_with_password({
+        res = supabase_anon.auth.sign_in_with_password({
             "email": form_data.username,
             "password": form_data.password
         })
@@ -168,7 +167,7 @@ async def activate_partner(
 ):
     # 1️⃣ Validate partner_id
     partner_res = (
-        supabase
+        supabase_admin
         .table("partners")
         .select("partner_id")
         .eq("partner_id", str(payload.partner_id))
@@ -181,7 +180,7 @@ async def activate_partner(
 
     # 2️⃣ Fetch profile
     profile_res = (
-        supabase
+        supabase_admin
         .table("profiles")
         .select("id, is_partner")
         .eq("id", str(user.id))
@@ -196,7 +195,7 @@ async def activate_partner(
         raise HTTPException(409, "Already a partner")
 
     # 3️⃣ Update profile
-    supabase.table("profiles").update({
+    supabase_admin.table("profiles").update({
         "is_partner": True,
         "partner_id": str(payload.partner_id)
     }).eq("id", str(user.id)).execute()
@@ -210,25 +209,26 @@ async def activate_partner(
 # -----------------------------
 # 🔁 REFRESH ACCESS TOKEN ROUTE
 # -----------------------------
-@router.post("/auth/refresh", response_model=Token)
-async def refresh_access_token(payload: RefreshTokenRequest):
+# @router.post("/auth/refresh", response_model=Token)
+# async def refresh_access_token(payload: RefreshTokenRequest):
 
-    refresh_token = payload.refresh_token
+#     refresh_token = payload.refresh_token
 
-    res = supabase.auth.refresh_session(refresh_token)
+#     res = supabase_admin.auth.refresh_session(refresh_token)
 
-    return Token(
-        access_token=res.session.access_token,
-        refresh_token=res.session.refresh_token,
-        token_type="bearer"
-    )
+#     return Token(
+#         access_token=res.session.access_token,
+#         refresh_token=res.session.refresh_token,
+#         token_type="bearer"
+#     )
+
 
 @router.get("/auth/me")
 async def me(user: UserResponse = Depends(get_current_user)):
-    profile = {}
+    sb = get_user_supabase(user.token)
 
     res = (
-        supabase
+        sb
         .table("profiles")
         .select("full_name, email, is_partner, partner_id")
         .eq("id", str(user.id))
@@ -249,7 +249,7 @@ async def me(user: UserResponse = Depends(get_current_user)):
 @router.post("/auth/forgot-password")
 async def forgot_password(data: UserForgotPassword):
     """
-    Trigger a password reset email via Supabase.
+    Trigger a password reset email via Supabase
     Handles rate limiting errors gracefully.
     """
     try:
@@ -259,7 +259,7 @@ async def forgot_password(data: UserForgotPassword):
         # Example for production: "https://goldenbanana.vercel.app/reset-password"  
         redirect_url = "https://www.qdio.shop/reset-password" 
         
-        supabase.auth.reset_password_email(data.email, options={"redirectTo": redirect_url})
+        supabase_admin.auth.reset_password_email(data.email, options={"redirectTo": redirect_url})
     
 
        
@@ -306,92 +306,57 @@ async def reset_password(
 
 # --- Profile Endpoints ---
 @router.get("/profiles/me", response_model=Profile)
-async def get_my_profile(current_user: UserResponse = Depends(get_current_user)):
-    try:
-        # 🔐 Create user-scoped Supabase client (RLS enforced)
-        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-        client.postgrest.auth(current_user.token)
+async def get_my_profile(user: UserResponse = Depends(get_current_user)):
+    sb = get_user_supabase(user.token)  # 🔐 anon + JWT (RLS enforced)
 
-        # READ profile as logged-in user
-        res = (
-            client
-            .table("profiles")
-            .select("*")
-            .eq("id", str(current_user.id))
-            .maybe_single()
-            .execute()
-        )
+    res = (
+        sb
+        .table("profiles")
+        .select("*")
+        .eq("id", str(user.id))
+        .maybe_single()
+        .execute()
+    )
 
-        # --- AUTO CREATE PROFILE (Google / first login users) ---
-        if not res or not res.data:
-            profile = {
-                "id": str(current_user.id),
-                "full_name": current_user.email.split("@")[0],
-                "email": current_user.email,
-                "gender": None,
-                "phone_number": None,
-                "address_line1": None,
-                "address_line2": None,
-                "city": None,
-                "state": None,
-                "postal_code": None,
-                "country": None,
-                "city_preference": "",
-                "voluntary_consent": False,
-                "fee_consent": False,
-                "account_status": "active",
-                "updated_at": datetime.utcnow().isoformat(),
-            }
+    # Auto-create profile (Google / first login)
+    if not res or not res.data:
+        profile = {
+            "id": str(user.id),
+            "full_name": user.email.split("@")[0],
+            "email": user.email,
+            "account_status": "active",
+        }
 
-            insert_res = client.table("profiles").insert(profile).execute()
-            return insert_res.data[0]
-        # -------------------------------------------------------
+        insert_res = sb.table("profiles").insert(profile).execute()
+        return insert_res.data[0]
 
-        return res.data
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        if "JWT expired" in str(e):
-            raise HTTPException(status_code=401, detail="JWT expired")
-
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return res.data
 
 
 @router.put("/profiles/me", response_model=Profile)
 async def update_my_profile(
     profile: ProfileBase,
-    current_user: UserResponse = Depends(get_current_user)
+    user: UserResponse = Depends(get_current_user)
 ):
-    try:
-        client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-        client.postgrest.auth(current_user.token)
+    sb = get_user_supabase(user.token)
 
-        update_data = profile.model_dump(exclude_unset=True)
-        if not update_data:
-            raise HTTPException(400, "No update data provided")
+    update_data = profile.model_dump(exclude_unset=True)
+    if not update_data:
+        raise HTTPException(400, "No update data provided")
 
-        res = (
-            client
-            .table("profiles")
-            .update(update_data)
-            .eq("id", str(current_user.id))
-            .execute()
-        )
+    res = (
+        sb
+        .table("profiles")
+        .update(update_data)
+        .eq("id", str(user.id))
+        .execute()
+    )
 
-        if not res.data:
-            raise HTTPException(404, "Profile update failed")
+    if not res.data:
+        raise HTTPException(404, "Profile update failed")
 
-        return res.data[0]
+    return res.data[0]
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        if "JWT expired" in str(e):
-            raise HTTPException(status_code=401, detail="JWT expired")
-
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- Product Endpoints ---
@@ -399,7 +364,7 @@ async def update_my_profile(
 @router.get("/products", response_model=List[Product])
 async def get_products():
     try:
-        res = supabase.table("products").select("*").order("created_at", desc=True).execute()
+        res = supabase_admin.table("products").select("*").order("created_at", desc=True).execute()
         products = res.data
 
         # Convert images from string to list safely
@@ -419,7 +384,7 @@ async def get_products():
 @router.get("/products/{product_id}", response_model=Product)
 async def get_product(product_id: int):
     try:
-        res = supabase.table("products").select("*").eq("product_id", product_id).single().execute()
+        res = supabase_admin.table("products").select("*").eq("product_id", product_id).single().execute()
         product = res.data
         if not product:
             raise HTTPException(404, "Product not found")
@@ -441,7 +406,7 @@ async def get_product(product_id: int):
 async def get_products_by_base_id(base_product_id: int):
     try:
         res = (
-            supabase.table("products")
+            supabase_admin.table("products")
             .select("*")
             .eq("base_product_id", base_product_id)
             .eq("is_active", True)
@@ -488,7 +453,7 @@ async def update_product(
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No update data provided")
 
         update_data["updated_at"] = datetime.now().isoformat()
-        res = supabase.table("products").update(update_data).eq("product_id", product_id).execute()
+        res = supabase_admin.table("products").update(update_data).eq("product_id", product_id).execute()
         if not res.data or len(res.data) == 0:
              raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found or update failed")
         return res.data[0]
@@ -502,7 +467,7 @@ async def update_product(
 @router.get("/delivery-partners", response_model=List[DeliveryPartner])
 async def get_delivery_partners(current_user: UserResponse = Depends(get_current_user)):
     try:
-        res = supabase.table("delivery_partners").select("*").execute()
+        res = supabase_admin.table("delivery_partners").select("*").execute()
         return res.data
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
@@ -526,7 +491,7 @@ async def price_preview(order: OrderCreate):
     # ---------------------------------
     for item in order.items:
         variant = (
-            supabase.table("product_variants")
+            supabase_admin.table("product_variants")
             .select("variant_id, product_id, stock_quantity")
             .eq("variant_id", item.variant_id)
             .single()
@@ -540,7 +505,7 @@ async def price_preview(order: OrderCreate):
             raise HTTPException(400, "Insufficient stock")
 
         product = (
-            supabase.table("products")
+            supabase_admin.table("products")
             .select("product_id, brand_id, price")
             .eq("product_id", variant["product_id"])
             .single()
@@ -579,7 +544,7 @@ async def price_preview(order: OrderCreate):
     # ---------------------------------
     if order.coupon_code:
         coupon_res = (
-            supabase.table("coupons")
+            supabase_admin.table("coupons")
             .select("""
                 coupon_id,
                 offer_scope,
@@ -683,7 +648,7 @@ async def create_order(
     # 1️⃣ Get user profile / address
     try:
         profile_res = (
-            supabase.table("profiles")
+            supabase_admin.table("profiles")
             .select("*")
             .eq("id", str(current_user.id))
             .maybe_single()
@@ -708,7 +673,7 @@ async def create_order(
                 "account_status": "active",
                 "updated_at": datetime.utcnow().isoformat(),
             }
-            supabase.table("profiles").insert(profile).execute()
+            supabase_admin.table("profiles").insert(profile).execute()
 
         required_fields = [
             profile.get("full_name"),
@@ -746,7 +711,7 @@ async def create_order(
 
         for item in order.items:
             variant_res = (
-                supabase.table("product_variants")
+                supabase_admin.table("product_variants")
                 .select("variant_id, product_id, stock_quantity, size")
                 .eq("variant_id", item.variant_id)
                 .maybe_single()
@@ -765,7 +730,7 @@ async def create_order(
                 )
 
             product_res = (
-                supabase.table("products")
+                supabase_admin.table("products")
                 .select("product_id, brand_id, price, supplier_id, supplier_product_id, color")
                 .eq("product_id", v["product_id"])
                 .maybe_single()
@@ -812,7 +777,7 @@ async def create_order(
 
     if order.coupon_code:
         coupon_res = (
-            supabase.table("coupons")
+            supabase_admin.table("coupons")
             .select("""
                 coupon_id,
                 offer_scope,
@@ -909,7 +874,7 @@ async def create_order(
             "opt_out_delivery": order.opt_out_delivery,
         }
 
-        order_res = supabase.table("orders").insert(order_data).execute()
+        order_res = supabase_admin.table("orders").insert(order_data).execute()
         new_order = order_res.data[0]
         new_order_id = new_order["order_id"]
 
@@ -935,10 +900,10 @@ async def create_order(
                 "color": i["color"],
             })
 
-        supabase.table("order_items").insert(items_payload).execute()
+        supabase_admin.table("order_items").insert(items_payload).execute()
 
     except Exception as e:
-        supabase.table("orders").delete().eq("order_id", new_order_id).execute()
+        supabase_admin.table("orders").delete().eq("order_id", new_order_id).execute()
         raise HTTPException(500, f"Order items failed: {e}")
     
 
@@ -964,12 +929,12 @@ async def create_order(
 
             razorpay_order_id = rzp_order["id"]
 
-            supabase.table("orders").update(
+            supabase_admin.table("orders").update(
                 {"razorpay_order_id": razorpay_order_id}
             ).eq("order_id", new_order_id).execute()
 
         except Exception as e:
-            supabase.table("orders").delete().eq("order_id", new_order_id).execute()
+            supabase_admin.table("orders").delete().eq("order_id", new_order_id).execute()
             raise HTTPException(500, f"Razorpay creation failed: {e}")
 
 
@@ -977,7 +942,7 @@ async def create_order(
     #  DEDUCT STOCK PER VARIANT
     for item in validated_items:
         (
-            supabase
+            supabase_admin
             .table("product_variants")
             .update({"stock_quantity": item["new_stock"]})
             .eq("variant_id", item["variant_id"])
@@ -988,7 +953,7 @@ async def create_order(
     # 9️⃣ COUPON USAGE (COD ONLY)
     # =====================================================
     if coupon_data and order.payment_method == "COD":
-        supabase.table("coupons").update({
+        supabase_admin.table("coupons").update({
             "used_count": coupon_data["used_count"] + 1
         }).eq("coupon_id", coupon_data["coupon_id"]).execute()
 
@@ -1004,10 +969,10 @@ async def create_order(
         # total products sold
         products_sold = sum(item["quantity"] for item in validated_items)
 
-        supabase.table("partners_profiles").update({
-            "total_orders": supabase.literal("total_orders + 1"),
-            "products_sold": supabase.literal(f"products_sold + {products_sold}"),
-            "total_coupon_usage": supabase.literal("total_coupon_usage + 1"),
+        supabase_admin.table("partners_profiles").update({
+            "total_orders": supabase_admin.literal("total_orders + 1"),
+            "products_sold": supabase_admin.literal(f"products_sold + {products_sold}"),
+            "total_coupon_usage": supabase_admin.literal("total_coupon_usage + 1"),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq(
             "partner_id", coupon_data["partner_id"]
@@ -1016,7 +981,7 @@ async def create_order(
 
     # 10. RETURN FINAL ORDER
     order_res = (
-        supabase.table("orders")
+        supabase_admin.table("orders")
         .select("*, order_items(*, products(product_name, category, sub_category, images))")
         .eq("order_id", new_order_id)
         .maybe_single()
@@ -1053,7 +1018,7 @@ async def get_orders(
     """
 
     query = (
-        supabase
+        supabase_admin
         .table("orders")
         .select("""
             *,
@@ -1082,9 +1047,10 @@ async def get_orders(
 
 @router.get("/orders/me", response_model=List[Order])
 async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
+    sb = get_user_supabase(current_user.token)
     try:
         orders_res = (
-            supabase
+            sb  
             .table("orders")
             .select(
                 "*, order_items(*, products(product_name,category,sub_category,images))"
@@ -1095,7 +1061,7 @@ async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
         )
 
         returns_res = (
-            supabase
+            sb
             .table("returns")
             .select("order_id, product_id, status")
             .eq("user_id", str(current_user.id))
@@ -1137,19 +1103,18 @@ async def get_my_orders(current_user: UserResponse = Depends(get_current_user)):
 @router.get("/orders/me/{order_id}", response_model=Order)
 async def get_my_single_order(
     order_id: int,
-    current_user: UserResponse = Depends(get_current_user)
-):
+    current_user: UserResponse = Depends(get_current_user)):
     try:
+        sb = get_user_supabase(current_user.token)
         res = (
-            supabase
+            sb
             .table("orders")
             .select(
                 """
                 *,
                 order_items(
                     *,
-                    products(product_name,category,sub_category,images),
-                    returns(status)
+                    products(product_name,category,sub_category,images)
                 )
                 """
             )
@@ -1196,15 +1161,16 @@ async def get_my_single_order(
 async def update_order(
     order_id: int,
     order_update: OrderUpdate,
-    current_user: UserResponse = Depends(get_current_user),
-):
+    current_user: UserResponse = Depends(get_current_user),):
     """
     Update opt_out_delivery.
     """
     try:
         # check order
+        sb = get_user_supabase(current_user.token)
         existing_res = (
-            supabase.table("orders")
+            sb
+            .table("orders")
             .select("*")
             .eq("order_id", order_id)
             .eq("user_id", str(current_user.id))
@@ -1220,7 +1186,7 @@ async def update_order(
         update_data = {"opt_out_delivery": order_update.opt_out_delivery}
 
         res = (
-            supabase.table("orders")
+            sb.table("orders")
             .update(update_data)
             .eq("order_id", order_id)
             .execute()
@@ -1234,7 +1200,7 @@ async def update_order(
 
         # fetch updated
         final_res = (
-            supabase.table("orders")
+            sb.table("orders")
             .select("*, order_items(*, products(product_name,category, sub_category, images))")
             .eq("order_id", order_id)
             .execute()
@@ -1267,7 +1233,7 @@ async def verify_payment(
     
     # 1. Check if order exists
     try:
-        order_res = supabase.table("orders").select("*").eq("order_id", data.order_id).eq("user_id", str(current_user.id)).single().execute()
+        order_res = supabase_admin.table("orders").select("*").eq("order_id", data.order_id).eq("user_id", str(current_user.id)).single().execute()
         if not order_res.data: raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
         order = order_res.data
         if order["payment_status"] == "Completed":
@@ -1292,7 +1258,7 @@ async def verify_payment(
     try:
         # 3️⃣.1 Mark order as completed (idempotent)
         update_res = (
-            supabase
+            supabase_admin
             .table("orders")
             .update(
                 {
@@ -1315,7 +1281,7 @@ async def verify_payment(
             # =================================================
             if updated_order.get("coupon_id"):
                 coupon_res = (
-                    supabase
+                    supabase_admin
                     .table("coupons")
                     .select("coupon_id, partner_id")
                     .eq("coupon_id", updated_order["coupon_id"])
@@ -1327,8 +1293,8 @@ async def verify_payment(
                     coupon = coupon_res.data
 
                     # increment coupon usage
-                    supabase.table("coupons").update({
-                        "used_count": supabase.literal("used_count + 1")
+                    supabase_admin.table("coupons").update({
+                        "used_count": supabase_admin.literal("used_count + 1")
                     }).eq("coupon_id", coupon["coupon_id"]).execute()
 
                     # =================================================
@@ -1336,7 +1302,7 @@ async def verify_payment(
                     # =================================================
                     if coupon.get("partner_id"):
                         items_res = (
-                            supabase
+                            supabase_admin
                             .table("order_items")
                             .select("quantity")
                             .eq("order_id", data.order_id)
@@ -1347,10 +1313,10 @@ async def verify_payment(
                             i["quantity"] for i in (items_res.data or [])
                         )
 
-                        supabase.table("partners_profiles").update({
-                            "total_orders": supabase.literal("total_orders + 1"),
-                            "products_sold": supabase.literal(f"products_sold + {products_sold}"),
-                            "total_coupon_usage": supabase.literal("total_coupon_usage + 1"),
+                        supabase_admin.table("partners_profiles").update({
+                            "total_orders": supabase_admin.literal("total_orders + 1"),
+                            "products_sold": supabase_admin.literal(f"products_sold + {products_sold}"),
+                            "total_coupon_usage": supabase_admin.literal("total_coupon_usage + 1"),
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         }).eq(
                             "partner_id", coupon["partner_id"]
@@ -1375,7 +1341,7 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
     """
     try:
         # 1. Fetch Order details
-        order_res = supabase.table("orders").select("*, order_items(*, products(product_name, category))").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
+        order_res = supabase_admin.table("orders").select("*, order_items(*, products(product_name, category))").eq("order_id", order_id).eq("user_id", str(current_user.id)).execute()
         
         if not order_res.data:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
@@ -1394,7 +1360,7 @@ async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(
         items_data = order_data.get('order_items', [])
 
         # 2. Fetch User Profile (for Address)
-        user_res = supabase.table("profiles").select("*").eq("id", str(current_user.id)).execute()
+        user_res = supabase_admin.table("profiles").select("*").eq("id", str(current_user.id)).execute()
         user_data = user_res.data[0] if user_res.data else {}
 
         # 3. Generate PDF
@@ -1440,7 +1406,7 @@ def get_product_variants(product_id: int):
 
     try:
         result = (
-            supabase
+            supabase_admin
             .table("product_variants")
             .select("variant_id, product_id, size, stock_quantity,mrp,price")
             .eq("product_id", product_id)
@@ -1464,7 +1430,7 @@ def list_variants(product_id: int | None = None):
 
     try:
         query = (
-            supabase
+            supabase_admin
             .table("product_variants")
             .select("variant_id, product_id, size, stock_quantity, mrp, price")
         )
@@ -1492,7 +1458,7 @@ def get_variant(variant_id: int):
 
     try:
         result = (
-            supabase
+            supabase_admin
             .table("product_variants")
             .select("variant_id, product_id, size, stock_quantity, mrp, price")
             .eq("variant_id", variant_id)
@@ -1513,7 +1479,7 @@ def get_variant(variant_id: int):
 @router.get("/suppliers", response_model=List[Supplier])
 async def get_suppliers():
     try:
-        res = supabase.table("suppliers").select("*").execute()
+        res = supabase_admin.table("suppliers").select("*").execute()
         return res.data
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1523,7 +1489,7 @@ async def get_suppliers():
 @router.get("/brands", response_model=List[BrandResponse])
 def get_brands():
     res = (
-        supabase.table("brands").select("*").execute()
+        supabase_admin.table("brands").select("*").execute()
     )
 
     if not res.data:
@@ -1535,7 +1501,7 @@ def get_brands():
 @router.get("/categories", response_model=List[CategoryResponse])
 def get_categories(segment: Optional[str] = Query(default=None)):
     try:
-        query = supabase.table("categories").select("*")
+        query = supabase_admin.table("categories").select("*")
 
         if segment:
             query = query.eq("segment", segment)
@@ -1552,7 +1518,7 @@ def get_categories(segment: Optional[str] = Query(default=None)):
 @router.post("/partners", response_model=PartnerResponse)
 def submit_partner_application(payload: PartnerCreate):
     try:
-        res = supabase.table("partners").insert(payload.model_dump()).execute()
+        res = supabase_admin.table("partners").insert(payload.model_dump()).execute()
 
         if not res.data:
             raise HTTPException(status_code=400, detail="Failed to submit application")
@@ -1576,7 +1542,7 @@ def submit_partner_application(payload: PartnerCreate):
 # ✅ Get All Partner Applications (Admin use)
 @router.get("/partners", response_model=list[PartnerResponse])
 def get_all_partner_applications():
-    res = supabase.table("partners").select("*").order("created_at", desc=True).execute()
+    res = supabase_admin.table("partners").select("*").order("created_at", desc=True).execute()
     return res.data
 
 
@@ -1594,7 +1560,7 @@ async def create_coupon_admin(payload: AdminCouponCreateRequest):
                 raise HTTPException(400, "brand_code required for brand coupons")
 
             brand_res = (
-                supabase
+                supabase_admin
                 .table("brands")
                 .select("brand_id, brand_code")
                 .eq("brand_code", payload.brand_code.upper())
@@ -1619,7 +1585,7 @@ async def create_coupon_admin(payload: AdminCouponCreateRequest):
                 raise HTTPException(400, "partner_id required for partner coupons")
 
             partner_res = (
-                supabase
+                supabase_admin
                 .table("partners")
                 .select("partner_id, full_name")
                 .eq("partner_id", str(payload.partner_id))
@@ -1646,7 +1612,7 @@ async def create_coupon_admin(payload: AdminCouponCreateRequest):
         # 4️⃣ INSERT COUPON
         # =====================================================
         insert_res = (
-            supabase
+            supabase_admin
             .table("coupons")
             .insert({
                 "coupon_code": coupon_code,
@@ -1700,7 +1666,7 @@ async def get_all_coupons():
 
     try:
         res = (
-            supabase
+            supabase_admin
             .table("coupons")
             .select("""
                 coupon_id,
@@ -1734,7 +1700,7 @@ async def get_partner_coupons(
 ):
     # 1️⃣ Resolve partner
     partner_res = (
-        supabase.table("partners")
+        supabase_admin.table("partners")
         .select("partner_id")
         .eq("email_id", user.email)
         .maybe_single()
@@ -1748,7 +1714,7 @@ async def get_partner_coupons(
 
     # 2️⃣ Fetch coupons
     coupons_res = (
-        supabase.table("coupons")
+        supabase_admin.table("coupons")
         .select("""
             coupon_id,
             coupon_code,
@@ -1798,11 +1764,12 @@ async def create_return(
     payload: ReturnCreate,
     current_user: UserResponse = Depends(get_current_user)
 ):
+
+    sb = get_user_supabase(current_user.token)
     try:
         # 1️⃣ Fetch order
         order_res = (
-            supabase
-            .table("orders")
+            sb.table("orders")
             .select("order_id, user_id, delivery_date, return_valid_till")
             .eq("order_id", payload.order_id)
             .eq("user_id", str(current_user.id))
@@ -1827,8 +1794,7 @@ async def create_return(
 
         # 3️⃣ Validate product belongs to order
         item_res = (
-            supabase
-            .table("order_items")
+            sb.table("order_items")
             .select("variant_id, product_id, products(product_name)")
             .eq("order_id", payload.order_id)
             .eq("variant_id", payload.variant_id)
@@ -1844,8 +1810,7 @@ async def create_return(
 
         # 4️⃣ Prevent duplicate return
         existing = (
-            supabase
-            .table("returns")
+            sb.table("returns")
             .select("return_id")
             .eq("order_id", payload.order_id)
             .eq("variant_id", payload.variant_id)
@@ -1869,7 +1834,7 @@ async def create_return(
         }
 
 
-        res = supabase.table("returns").insert(insert_data).execute()
+        res = sb.table("returns").insert(insert_data).execute()
 
         return {
             "message": "Return request created",
@@ -1888,8 +1853,10 @@ async def get_my_returns(
     order_id: int,
     current_user: UserResponse = Depends(get_current_user)
 ):
+    
+    sb = get_user_supabase(current_user.token)
     res = (
-        supabase
+        sb
         .table("returns")
         .select("*")
         .eq("order_id", order_id)
@@ -1910,7 +1877,7 @@ async def update_return_status(
     payload: ReturnUpdate
 ):
     res = (
-        supabase
+        supabase_admin
         .table("returns")
         .update({
             "status": payload.status.value,   
@@ -1936,7 +1903,7 @@ async def update_return_status(
 async def get_all_returns(
     status: ReturnStatusEnum | None = None
 ):
-    query = supabase.table("returns").select("*")
+    query = supabase_admin.table("returns").select("*")
 
     if status:
         query = query.eq("status", status.value)
@@ -1964,7 +1931,7 @@ async def update_delivery_status(
 ):
     # 1️⃣ Check order exists
     order_res = (
-        supabase
+        supabase_admin
         .table("orders")
         .select("order_id, delivery_date")
         .eq("order_id", order_id)
@@ -1976,7 +1943,7 @@ async def update_delivery_status(
         raise HTTPException(status_code=404, detail="Order not found")
 
     # 2️⃣ Insert into delivery_status log
-    supabase.table("delivery_status").insert({
+    supabase_admin.table("delivery_status").insert({
         "order_id": order_id,
         "delivery_partner_id": payload.delivery_partner_id,
         "status": payload.status.value,   # IMPORTANT
@@ -1987,7 +1954,7 @@ async def update_delivery_status(
     if payload.status == DeliveryStatusEnum.DELIVERED:
         if order_res.data["delivery_date"] is None:
             now = datetime.now(timezone.utc)
-            supabase.table("orders").update({
+            supabase_admin.table("orders").update({
                 "delivery_date": now.isoformat(),
                 "return_valid_till": (now + timedelta(days=7)).isoformat()
             }).eq("order_id", order_id).execute()
@@ -2006,7 +1973,7 @@ async def get_partner_dashboard(
     # 1️⃣ Verify partner from profiles (WORKING LOGIC)
     # =====================================================
     profile_res = (
-        supabase
+        supabase_admin
         .table("profiles")
         .select("partner_id, is_partner")
         .eq("id", str(current_user.id))
@@ -2026,7 +1993,7 @@ async def get_partner_dashboard(
     # 2️⃣ Partner basic info
     # =====================================================
     partner_res = (
-        supabase
+        supabase_admin
         .table("partners")
         .select("full_name")
         .eq("partner_id", partner_id)
@@ -2040,7 +2007,7 @@ async def get_partner_dashboard(
     # 3️⃣ Partner coupons
     # =====================================================
     coupons_res = (
-        supabase
+        supabase_admin
         .table("coupons")
         .select("""
             coupon_id,
@@ -2070,7 +2037,7 @@ async def get_partner_dashboard(
 
     if coupon_ids:
         orders_res = (
-            supabase
+            supabase_admin
             .table("orders")
             .select("order_id, total_amount")
             .in_("coupon_id", coupon_ids)
@@ -2094,7 +2061,7 @@ async def get_partner_dashboard(
         order_ids = [o["order_id"] for o in orders]
 
         items_res = (
-            supabase
+            supabase_admin
             .table("order_items")
             .select("quantity")
             .in_("order_id", order_ids)
@@ -2111,7 +2078,7 @@ async def get_partner_dashboard(
 
     if brand_ids:
         brand_res = (
-            supabase
+            supabase_admin
             .table("brands")
             .select("brand_name")
             .in_("brand_id", list(brand_ids))

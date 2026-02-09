@@ -7,7 +7,7 @@ import random
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from services import supabase
+from services import supabase_admin
 from bs4 import BeautifulSoup
 import csv
 import textwrap
@@ -46,7 +46,7 @@ def calculate_order_pricing(order, validated_items, skip_brand_offers=False):
         for brand_id, data in brand_map.items():
    
             offer_res = (
-                supabase
+                supabase_admin
                 .table("brand_offer_active_view")
                 .select("""
                     offer_id,
@@ -272,7 +272,7 @@ def generate_pdf_invoice(order_data, user_data, items_data):
 def generate_unique_lucky_numbers(count: int):
     lucky_numbers = []
 
-    existing_numbers = supabase.table("lucky_numbers") \
+    existing_numbers = supabase_admin.table("lucky_numbers") \
         .select("lucky_number") \
         .execute().data
     existing_set = {row["lucky_number"] for row in existing_numbers}
@@ -362,7 +362,7 @@ def upsert_product(data: dict):
     data = {k: v for k, v in data.items() if k != "product_id"}
 
     res = (
-        supabase.table("products")
+        supabase_admin.table("products")
         .upsert(data, on_conflict="supplier_id,supplier_product_id")
         .execute()
     )
@@ -370,7 +370,7 @@ def upsert_product(data: dict):
     return res
 
 def upsert_variant(data: dict):
-    supabase.table("product_variants").upsert(
+    supabase_admin.table("product_variants").upsert(
         data,
         on_conflict="supplier_variant_id"
     ).execute()
