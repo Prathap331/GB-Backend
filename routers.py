@@ -957,28 +957,6 @@ async def create_order(
             "used_count": coupon_data["used_count"] + 1
         }).eq("coupon_id", coupon_data["coupon_id"]).execute()
 
-    
-    # =====================================================
-    # 🔥 PARTNER DASHBOARD UPDATE (COD ONLY)
-    # =====================================================
-    if (
-        coupon_data
-        and order.payment_method == "COD"
-        and coupon_data.get("partner_id")
-    ):
-        # total products sold
-        products_sold = sum(item["quantity"] for item in validated_items)
-
-        supabase_admin.table("partners_profiles").update({
-            "total_orders": supabase_admin.literal("total_orders + 1"),
-            "products_sold": supabase_admin.literal(f"products_sold + {products_sold}"),
-            "total_coupon_usage": supabase_admin.literal("total_coupon_usage + 1"),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq(
-            "partner_id", coupon_data["partner_id"]
-        ).execute()
-
-
     # 10. RETURN FINAL ORDER
     order_res = (
         supabase_admin.table("orders")
@@ -1272,55 +1250,32 @@ async def verify_payment(
             .execute()
         )
 
-        # 🔐 Only if this call actually updated the order
+        # 🔐 Only if this call actually updated the order (idempotent-safe)
         if update_res.data and len(update_res.data) > 0:
             updated_order = update_res.data[0]
 
             # =================================================
-            # 3️⃣.1 Coupon usage
+            # 3️⃣.1 Coupon usage (ONLINE PAYMENTS ONLY)
             # =================================================
             if updated_order.get("coupon_id"):
+                # Fetch current used_count
                 coupon_res = (
                     supabase_admin
                     .table("coupons")
-                    .select("coupon_id, partner_id")
+                    .select("coupon_id, used_count")
                     .eq("coupon_id", updated_order["coupon_id"])
                     .maybe_single()
                     .execute()
                 )
 
                 if coupon_res and coupon_res.data:
-                    coupon = coupon_res.data
+                    current_used = coupon_res.data.get("used_count", 0)
 
-                    # increment coupon usage
                     supabase_admin.table("coupons").update({
-                        "used_count": supabase_admin.literal("used_count + 1")
-                    }).eq("coupon_id", coupon["coupon_id"]).execute()
-
-                    # =================================================
-                    # 3️⃣.2 Partner dashboard update (ONLY if partner coupon)
-                    # =================================================
-                    if coupon.get("partner_id"):
-                        items_res = (
-                            supabase_admin
-                            .table("order_items")
-                            .select("quantity")
-                            .eq("order_id", data.order_id)
-                            .execute()
-                        )
-
-                        products_sold = sum(
-                            i["quantity"] for i in (items_res.data or [])
-                        )
-
-                        supabase_admin.table("partners_profiles").update({
-                            "total_orders": supabase_admin.literal("total_orders + 1"),
-                            "products_sold": supabase_admin.literal(f"products_sold + {products_sold}"),
-                            "total_coupon_usage": supabase_admin.literal("total_coupon_usage + 1"),
-                            "updated_at": datetime.now(timezone.utc).isoformat(),
-                        }).eq(
-                            "partner_id", coupon["partner_id"]
-                        ).execute()
+                        "used_count": current_used + 1
+                    }).eq(
+                        "coupon_id", coupon_res.data["coupon_id"]
+                    ).execute()
 
         return {"status": "success", "message": "Payment verified and order confirmed"}
 
@@ -1330,7 +1285,6 @@ async def verify_payment(
         raise HTTPException(500, f"DB update failed: {e}")
 
     
-
 
 # --- UPDATED ENDPOINT: Download Invoice (With Payment Check) ---
 @router.get("/orders/{order_id}/invoice")
