@@ -3,7 +3,7 @@ import os
 import razorpay
 from fastapi import Depends, HTTPException
 from fastapi.security import OAuth2PasswordBearer
-from schemas import UserResponse
+from schemas.auth_schemas import UserResponse
 from dotenv import load_dotenv
 from supabase import create_client
 

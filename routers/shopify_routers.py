@@ -16,6 +16,10 @@ SHOPIFY_CLIENT_SECRET = os.getenv("SHOPIFY_CLIENT_SECRET")
 
 @router.get("/install")
 def shopify_install():
+    """
+    Initiate the Shopify OAuth installation process by generating the installation URL. 
+    This endpoint constructs the authorization URL with the required query parameters, including client ID, scope, redirect URI, and a unique state parameter for security. 
+    It returns the installation URL that merchants can use to connect their Shopify store to the application."""
     state = str(uuid.uuid4())
 
     params = {
@@ -34,6 +38,11 @@ def shopify_install():
 
 @router.get("/oauth/callback")
 def shopify_oauth_callback(request: Request):
+    """""
+    Handle the Shopify OAuth callback after a merchant authorizes the app.
+    This endpoint receives the authorization code and shop domain from Shopify, exchanges the code for an access token, and stores the supplier information in the database.
+    It returns a redirect response to indicate successful connection or already connected status."""
+    
     code = request.query_params.get("code")
     shop = request.query_params.get("shop")
 
