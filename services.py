@@ -1,4 +1,5 @@
 # services.py
+from datetime import datetime
 import os
 import razorpay
 from fastapi import Depends, HTTPException
@@ -6,6 +7,7 @@ from fastapi.security import OAuth2PasswordBearer
 from schemas.auth_schemas import UserResponse
 from dotenv import load_dotenv
 from supabase import create_client
+import boto3
 
 load_dotenv()
 
@@ -105,3 +107,109 @@ def fetch_supplier_products():
 
     return res.json()
 
+
+
+ses_client = boto3.client(
+    "ses",
+    region_name=os.getenv("AWS_REGION"),
+    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+)
+
+def send_order_email(
+    to_email: str,
+    order_id: int,
+    total_amount: float,
+    items: list
+):
+    try:
+        subject = f"Order Confirmation – #{order_id} | Qdio"
+
+        # Build items table rows
+        items_html = ""
+        for item in items:
+            name = item.get("product_name", "Item")
+            qty = item.get("quantity", 1)
+            price = item.get("price_per_unit", 0)
+
+            items_html += f"""
+            <tr>
+                <td style="padding:10px;border-bottom:1px solid #eee;">
+                    {name}
+                </td>
+                <td style="padding:10px;border-bottom:1px solid #eee;text-align:center;">
+                    {qty}
+                </td>
+                <td style="padding:10px;border-bottom:1px solid #eee;text-align:right;">
+                    ₹{price}
+                </td>
+            </tr>
+            """
+
+        body_html = f"""
+        <html>
+        <body style="font-family:Arial,sans-serif;background:#f6f6f6;padding:20px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:auto;background:#ffffff;border-radius:8px;overflow:hidden;">
+                
+                <!-- Header -->
+               <tr>
+                    <td style="background:#c74242;color:#ffffff;padding:20px;text-align:center;">
+                        <h2 style="margin:0;letter-spacing:2px;">QDIO</h2>
+                        <p style="margin:5px 0 0;font-size:14px;">Order Confirmation</p>
+                    </td>
+                </tr>
+
+                <!-- Greeting -->
+                <tr>
+                    <td style="padding:20px;">
+                        <p>Hi there,</p>
+                        <p>Thank you for shopping with <strong>Qdio</strong> 🎉</p>
+                        <p>Your order <strong>#{order_id}</strong> has been successfully placed.</p>
+                    </td>
+                </tr>
+
+                <!-- Order Items -->
+                <tr>
+                    <td style="padding:0 20px 20px;">
+                        <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                            <tr style="background:#f2f2f2;">
+                                <th style="padding:10px;text-align:left;">Item</th>
+                                <th style="padding:10px;text-align:center;">Qty</th>
+                                <th style="padding:10px;text-align:right;">Price</th>
+                            </tr>
+                            {items_html}
+                        </table>
+                    </td>
+                </tr>
+
+                <!-- Total -->
+                <tr>
+                    <td style="padding:20px;text-align:right;">
+                        <h3 style="margin:0;">Total: ₹{total_amount}</h3>
+                    </td>
+                </tr>
+
+                <!-- Footer -->
+                <tr>
+                    <td style="padding:20px;background:#fafafa;font-size:12px;color:#666;text-align:center;">
+                        <p>If you have any questions, contact us at support@qdio.shop</p>
+                        <p>© {datetime.now().year} Qdio. All rights reserved.</p>
+                    </td>
+                </tr>
+
+            </table>
+        </body>
+        </html>
+        """
+
+        ses_client.send_email(
+            Source=f"QDIO <{os.getenv('SES_FROM_EMAIL')}>",
+            Destination={"ToAddresses": [to_email]},
+            Message={
+                "Subject": {"Data": subject},
+                "Body": {"Html": {"Data": body_html}},
+            },
+        )
+
+    except Exception as e:
+        print("SES Email Error:", e)

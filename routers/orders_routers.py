@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status, Response
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import uuid
 from fastapi import Header, HTTPException
 from services import (
     get_user_supabase,
+    send_order_email,
     supabase_admin,
     razorpay_client,
     RAZORPAY_KEY_ID,
@@ -187,6 +188,7 @@ async def price_preview(order: OrderCreate):
 @router.post("/", response_model=Order)
 async def create_order(
     order: OrderCreate,
+    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user)
 ):
     """
@@ -280,7 +282,7 @@ async def create_order(
 
             product_res = (
                 supabase_admin.table("products")
-                .select("product_id, brand_id, price, supplier_id, supplier_product_id, color")
+                .select("product_id, product_name, brand_id, price, supplier_id, supplier_product_id, color")
                 .eq("product_id", v["product_id"])
                 .maybe_single()
                 .execute()
@@ -299,6 +301,7 @@ async def create_order(
             validated_items.append({
                 "variant_id": v["variant_id"],
                 "product_id": p["product_id"],
+                "product_name": p["product_name"],
                 "brand_id": p["brand_id"],
                 "quantity": item.quantity,
                 "price_per_unit": price_per_unit,
@@ -531,6 +534,16 @@ async def create_order(
     final_order.coupon_discount = discount
     final_order.total_discount = discount
 
+    # Send email only for COD
+    if order.payment_method == "COD" and current_user.email:
+        background_tasks.add_task(
+            send_order_email,
+            current_user.email,
+            new_order_id,
+            grand_total,
+            validated_items
+        )
+
     return final_order
 
 
@@ -758,7 +771,7 @@ async def update_order(
 
 
 # --- UPDATED ENDPOINT: Download Invoice (With Payment Check) ---
-@router.get("/orders/{order_id}/invoice")
+@router.get("/{order_id}/invoice")
 async def get_order_invoice(order_id: int, current_user: UserResponse = Depends(get_current_user)):
     """
     Generate and download a PDF invoice for a specific order.

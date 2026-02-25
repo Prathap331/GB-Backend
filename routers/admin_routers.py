@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from typing import List, Optional
 from datetime import datetime, timezone
 from fastapi import Header, HTTPException
 import razorpay
 from services import (
+    send_order_email,
     supabase_admin,
     razorpay_client,
     get_current_user
@@ -162,66 +163,94 @@ async def create_coupon_admin(payload: AdminCouponCreateRequest):
 @router.post("/payment/verify")
 async def verify_payment(
     data: PaymentVerificationRequest,
+    background_tasks: BackgroundTasks,
     current_user: UserResponse = Depends(get_current_user)
 ):
-    
     """
     Verify a Razorpay payment signature.
     """
-    
-    # 1. Check if order exists
-    try:
-        order_res = supabase_admin.table("orders").select("*").eq("order_id", data.order_id).eq("user_id", str(current_user.id)).single().execute()
-        if not order_res.data: 
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
-        
-        order = order_res.data
-        if order["payment_status"] == "Completed":
-            return {"status": "success", "message": "Payment already verified"}
-        
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Error fetching order: {e}")
 
-    # 2. Verify Signature
+    # -------------------------------------------------
+    # 1️⃣ Check if order exists
+    # -------------------------------------------------
     try:
-        params_dict = {
-            'razorpay_order_id': data.razorpay_order_id,
-            'razorpay_payment_id': data.razorpay_payment_id,
-            'razorpay_signature': data.razorpay_signature
-        }
-        razorpay_client.utility.verify_payment_signature(params_dict)
-    except razorpay.errors.SignatureVerificationError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Payment verification failed: Invalid signature")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Verification error: {e}")
-
-    # 3. Update DB (order confirmation + coupon usage)
-    try:
-        # 3️⃣.1 Mark order as completed (idempotent)
-        update_res = (
+        order_res = (
             supabase_admin
             .table("orders")
-            .update(
-                {
-                    "payment_status": "Completed",
-                    "order_status": "Confirmed",
-                    "razorpay_payment_id": data.razorpay_payment_id,
-                }
-            )
+            .select("*")
             .eq("order_id", data.order_id)
-            .neq("payment_status", "Completed")   
+            .eq("user_id", str(current_user.id))
+            .single()
             .execute()
         )
 
-        # 🔐 Only if this call actually updated the order (idempotent-safe)
+        if not order_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Order not found"
+            )
+
+        order = order_res.data
+
+        if order["payment_status"] == "Completed":
+            return {"status": "success", "message": "Payment already verified"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error fetching order: {e}"
+        )
+
+    # -------------------------------------------------
+    # 2️⃣ Verify Razorpay Signature
+    # -------------------------------------------------
+    try:
+        params_dict = {
+            "razorpay_order_id": data.razorpay_order_id,
+            "razorpay_payment_id": data.razorpay_payment_id,
+            "razorpay_signature": data.razorpay_signature,
+        }
+
+        razorpay_client.utility.verify_payment_signature(params_dict)
+
+    except razorpay.errors.SignatureVerificationError:
+        raise HTTPException(
+            status_code=400,
+            detail="Payment verification failed: Invalid signature"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Verification error: {e}"
+        )
+
+    # -------------------------------------------------
+    # 3️⃣ Update Order Status (Idempotent Safe)
+    # -------------------------------------------------
+    try:
+        update_res = (
+            supabase_admin
+            .table("orders")
+            .update({
+                "payment_status": "Completed",
+                "order_status": "Confirmed",
+                "razorpay_payment_id": data.razorpay_payment_id,
+            })
+            .eq("order_id", data.order_id)
+            .neq("payment_status", "Completed")
+            .execute()
+        )
+
+        # Only if order was actually updated
         if update_res.data and len(update_res.data) > 0:
             updated_order = update_res.data[0]
 
-            # =================================================
-            # 3️⃣.1 Coupon usage (ONLINE PAYMENTS ONLY)
-            # =================================================
+            # -----------------------------------------
+            # 3️⃣.1 Increment Coupon Usage
+            # -----------------------------------------
             if updated_order.get("coupon_id"):
-                # Fetch current used_count
                 coupon_res = (
                     supabase_admin
                     .table("coupons")
@@ -237,18 +266,55 @@ async def verify_payment(
                     supabase_admin.table("coupons").update({
                         "used_count": current_used + 1
                     }).eq(
-                        "coupon_id", coupon_res.data["coupon_id"]
+                        "coupon_id",
+                        coupon_res.data["coupon_id"]
                     ).execute()
 
-        return {"status": "success", "message": "Payment verified and order confirmed"}
+            # -----------------------------------------
+            # 3️⃣.2 Fetch Order Items For Email
+            # -----------------------------------------
+            items_res = (
+                supabase_admin
+                .table("order_items")
+                .select("quantity, price_per_unit, products(product_name)")
+                .eq("order_id", data.order_id)
+                .execute()
+            )
+
+            items_for_email = []
+
+            for item in (items_res.data or []):
+                items_for_email.append({
+                    "product_name": item["products"]["product_name"],
+                    "quantity": item["quantity"],
+                    "price_per_unit": item["price_per_unit"],
+                })
+
+            # -----------------------------------------
+            # 3️⃣.3 Send Confirmation Email
+            # -----------------------------------------
+            if current_user.email:
+                background_tasks.add_task(
+                    send_order_email,
+                    current_user.email,
+                    data.order_id,
+                    updated_order["total_amount"],
+                    items_for_email
+                )
+
+        return {
+            "status": "success",
+            "message": "Payment verified and order confirmed"
+        }
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"DB update failed: {e}")
-
+        raise HTTPException(
+            status_code=500,
+            detail=f"DB update failed: {e}"
+        )
     
-
 
 
 # --- Delivery Partner Endpoints ---

@@ -60,9 +60,7 @@ async def signup(user: UserCreate):
 
         partner_id = partner_res.data["partner_id"]
 
-    print("DEBUG | partner_code:", user.partner_code)
-    print("DEBUG | partner_id:", partner_id)
-
+   
     # -------------------------
     # 2️⃣ Auth signup (PUBLIC – anon client)
     # -------------------------
@@ -129,25 +127,22 @@ async def signup(user: UserCreate):
 # login
 @router.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    """
-    Login flow:
-        1️⃣ Authenticate user (Supabase anon client)
-        2️⃣ Return access + refresh tokens
-
-    """
     try:
+        
         res = supabase_anon.auth.sign_in_with_password({
             "email": form_data.username,
             "password": form_data.password
         })
+
         return Token(
             access_token=res.session.access_token,
             refresh_token=res.session.refresh_token,
             token_type="bearer"
         )
-    except:
-        raise HTTPException(400, "Incorrect email or password")
 
+    except Exception as e:
+        print("❌ LOGIN ERROR:", str(e))
+        raise HTTPException(400, "Incorrect email or password")
 
 
 
