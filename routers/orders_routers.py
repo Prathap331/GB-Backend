@@ -166,7 +166,7 @@ async def price_preview(order: OrderCreate):
     gst = round(discounted * 0.05, 2)
     final = round(discounted + gst, 2)
 
-    shipping = 0.0 if final < 499 else 0.0
+    shipping = 49.0 if final < 499 else 0.0
     final += shipping
 
     cod_fee = 0.0
@@ -394,7 +394,7 @@ async def create_order(
     gst_amount = round(discounted * 0.05, 2)
     total = discounted + gst_amount
 
-    shipping_fee = 0.0 if total < 499 else 0.0
+    shipping_fee = 49.0 if total < 499 else 0.0
     total += shipping_fee
 
     cod_fee = 0.0
